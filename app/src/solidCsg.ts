@@ -405,7 +405,7 @@ export function buildPrimitiveGeometry(node: SolidModelNode, sketches: VectorSha
       bevelSize: bev,
       bevelSegments: 2,
     });
-    geo.center();
+    geo.translate(0, 0, -h * 0.5);
   } else {
     // Revolve (dome/vase profile)
     const lathePts: THREE.Vector2[] = [];

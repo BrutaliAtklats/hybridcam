@@ -743,26 +743,28 @@ export default function App() {
       } else if (designMode === "model3d" && !isSketchingIn3d) {
         if (key === "k") { setSketchTool("rect"); setIsSketchingIn3d(true); return; }
         if (key === "e") {
+          const sk = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
+          const extH = sk ? Math.max(1, sk.depthMm || 5) : 10;
           const id = `solid-${Date.now()}`;
           setSolidModels((ms) => [
             ...ms,
             {
               id,
-              name: `Extrude ${ms.length + 1}`,
+              name: sk ? `Extrude ${sk.name}` : `Extrude ${ms.length + 1}`,
               kind: "extrude",
               visible: true,
               boolOp: "union",
-              xMm: 0,
-              yMm: 0,
-              zMm: 0,
-              widthMm: 50,
-              depthMm: 50,
-              heightMm: 10,
+              xMm: sk ? sk.xMm : 0,
+              yMm: sk ? sk.yMm : 0,
+              zMm: sk ? (sk.sketchZMm ?? 0) + extH * 0.5 : 0,
+              widthMm: sk ? sk.widthMm : 50,
+              depthMm: sk ? sk.heightMm : 50,
+              heightMm: extH,
               rotXDeg: 0,
               rotYDeg: 0,
-              rotZDeg: 0,
+              rotZDeg: sk ? sk.rotationDeg : 0,
               bevelMm: 0,
-              sketchId: vectorShapes[0]?.id,
+              sketchId: sk?.id,
             },
           ]);
           setActiveSolidId(id);
@@ -6530,23 +6532,25 @@ export default function App() {
             const addSolidQuick = (kind: SolidPrimitiveKind, lbl: string, defaultOp: BooleanOp) => {
               const id = `solid-${Date.now()}`;
               const isHole = kind === "hole";
+              const sk = kind === "extrude" ? (vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0]) : undefined;
+              const extH = sk ? Math.max(1, sk.depthMm || 5) : 10;
               const node: SolidModelNode = {
                 id,
-                name: `${lbl} ${solidModels.length + 1}`,
+                name: sk ? `Extrude ${sk.name}` : `${lbl} ${solidModels.length + 1}`,
                 kind,
                 visible: true,
                 boolOp: solidModels.length === 0 ? "union" : defaultOp,
-                xMm: 0,
-                yMm: 0,
-                zMm: isHole ? -job.thicknessMm * 0.5 : 0,
-                widthMm: isHole ? 12 : 50,
-                depthMm: isHole ? 12 : 50,
-                heightMm: isHole ? job.thicknessMm + 2 : 10,
+                xMm: sk ? sk.xMm : 0,
+                yMm: sk ? sk.yMm : 0,
+                zMm: sk ? (sk.sketchZMm ?? 0) + extH * 0.5 : (isHole ? -job.thicknessMm * 0.5 : 0),
+                widthMm: sk ? sk.widthMm : (isHole ? 12 : 50),
+                depthMm: sk ? sk.heightMm : (isHole ? 12 : 50),
+                heightMm: sk ? extH : (isHole ? job.thicknessMm + 2 : 10),
                 rotXDeg: 0,
                 rotYDeg: 0,
-                rotZDeg: 0,
+                rotZDeg: sk ? sk.rotationDeg : 0,
                 bevelMm: 0,
-                sketchId: vectorShapes[0]?.id,
+                sketchId: sk?.id ?? vectorShapes[0]?.id,
               };
               setSolidModels((ms) => [...ms, node]);
               setActiveSolidId(id);

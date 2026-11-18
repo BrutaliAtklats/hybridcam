@@ -17,6 +17,17 @@ interface Props {
   onUpdateShape: (id: string, patch: Partial<VectorShape>) => void;
 }
 
+interface PendingShapeDim {
+  x0: number;
+  y0: number;
+  dirX: number;
+  dirY: number;
+  tool: SketchToolMode;
+  wStr: string;
+  hStr: string;
+  sidesStr: string;
+}
+
 const ROLE_COLORS: Record<VectorRole, string> = {
   cutout: "var(--hc-accent-secondary, #38bdf8)",
   carve: "#fbbf24",
@@ -40,10 +51,30 @@ export const VectorSketchView: React.FC<Props> = ({
   const [viewZoom, setViewZoom] = useState(1.0);
   const [viewPan, setViewPan] = useState({ x: 0, y: 0 });
   const [draftRect, setDraftRect] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const [pendingDim, setPendingDim] = useState<PendingShapeDim | null>(null);
   const [draftPoly, setDraftPoly] = useState<[number, number][]>([]);
   const [hoverPt, setHoverPt] = useState<[number, number] | null>(null);
   const dragState = useRef<"none" | "move" | "draw" | "pan">("none");
   const lastMouse = useRef({ x: 0, y: 0 });
+  const widthInputRef = useRef<HTMLInputElement | null>(null);
+  const heightInputRef = useRef<HTMLInputElement | null>(null);
+  const sidesInputRef = useRef<HTMLInputElement | null>(null);
+  const isPendingOpen = pendingDim !== null;
+
+  useEffect(() => {
+    if (isPendingOpen) {
+      const id = window.setTimeout(() => {
+        widthInputRef.current?.focus();
+        widthInputRef.current?.select();
+      }, 0);
+      return () => window.clearTimeout(id);
+    }
+  }, [isPendingOpen]);
+
+  useEffect(() => {
+    setPendingDim(null);
+    setDraftRect(null);
+  }, [toolMode]);
 
   const getScalePxPerMm = (cw: number, ch: number) =>
     Math.min((cw - 80) / Math.max(1, job.widthMm), (ch - 80) / Math.max(1, job.depthMm)) * viewZoom;
@@ -60,6 +91,15 @@ export const VectorSketchView: React.FC<Props> = ({
     const cx = canvas.width * 0.5 + viewPan.x;
     const cy = canvas.height * 0.5 + viewPan.y;
     return [(mx - cx) / pxPerMm, -(my - cy) / pxPerMm];
+  };
+
+  const worldToScreen = (wx: number, wy: number): { x: number; y: number } => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 100, y: 100 };
+    const pxPerMm = getScalePxPerMm(canvas.width, canvas.height);
+    const cx = canvas.width * 0.5 + viewPan.x;
+    const cy = canvas.height * 0.5 + viewPan.y;
+    return { x: cx + wx * pxPerMm, y: cy - wy * pxPerMm };
   };
 
   useEffect(() => {
@@ -218,6 +258,56 @@ export const VectorSketchView: React.FC<Props> = ({
     setDraftPoly([]);
   };
 
+  const updatePendingDim = (patch: Partial<Pick<PendingShapeDim, "wStr" | "hStr" | "sidesStr">>) => {
+    setPendingDim((prev) => {
+      if (!prev) return null;
+      const next = { ...prev, ...patch };
+      const w = Math.max(0.5, Number.isFinite(parseFloat(next.wStr)) ? parseFloat(next.wStr) : 0.5);
+      const h = Math.max(0.5, Number.isFinite(parseFloat(next.hStr)) ? parseFloat(next.hStr) : 0.5);
+      setDraftRect({
+        x0: next.x0,
+        y0: next.y0,
+        x1: next.x0 + next.dirX * w,
+        y1: next.y0 + next.dirY * h,
+      });
+      return next;
+    });
+  };
+
+  const cancelPendingDim = () => {
+    setPendingDim(null);
+    setDraftRect(null);
+  };
+
+  const commitPendingDim = () => {
+    if (!pendingDim) return;
+    const w = Math.max(0.5, parseFloat(pendingDim.wStr) || 10);
+    const h = Math.max(0.5, parseFloat(pendingDim.hStr) || 10);
+    const sides = Math.max(3, Math.min(24, Math.round(parseFloat(pendingDim.sidesStr) || 6)));
+    const x1 = pendingDim.x0 + pendingDim.dirX * w;
+    const y1 = pendingDim.y0 + pendingDim.dirY * h;
+    const isSlot = pendingDim.tool === "slot";
+    const kind: VectorShapeKind = isSlot ? "rect" : (pendingDim.tool as VectorShapeKind);
+    const label = isSlot ? "Slot" : kind === "rect" ? "Rectangle" : kind === "circle" ? "Circle" : "Polygon";
+    onAddShape({
+      id: `vec-${Date.now()}`,
+      name: `${label} ${shapes.length + 1}`,
+      kind,
+      visible: true,
+      xMm: (pendingDim.x0 + x1) * 0.5,
+      yMm: (pendingDim.y0 + y1) * 0.5,
+      widthMm: Number(w.toFixed(2)),
+      heightMm: Number(h.toFixed(2)),
+      rotationDeg: 0,
+      cornerRadiusMm: isSlot ? Number((Math.min(w, h) * 0.5).toFixed(2)) : 0,
+      sides,
+      depthMm: 4,
+      role: "cutout",
+    });
+    setPendingDim(null);
+    setDraftRect(null);
+  };
+
   return (
     <div style={{ position: "relative", width: "100%", height: "100%", background: "#0b0e14" }}>
       <canvas
@@ -233,6 +323,9 @@ export const VectorSketchView: React.FC<Props> = ({
           if (e.button === 2 || e.button === 1) {
             dragState.current = "pan";
             return;
+          }
+          if (pendingDim) {
+            cancelPendingDim();
           }
           const [wx, wy] = screenToWorld(e.clientX, e.clientY).map(snap) as [number, number];
           if (toolMode === "polyline") {
@@ -289,26 +382,21 @@ export const VectorSketchView: React.FC<Props> = ({
             const w = Math.abs(draftRect.x1 - draftRect.x0);
             const h = Math.abs(draftRect.y1 - draftRect.y0);
             if (w >= 2 && h >= 2) {
-              const isSlot = toolMode === "slot";
-              const kind: VectorShapeKind = isSlot ? "rect" : (toolMode as VectorShapeKind);
-              const label = isSlot ? "Slot" : kind === "rect" ? "Rectangle" : kind === "circle" ? "Circle" : "Polygon";
-              onAddShape({
-                id: `vec-${Date.now()}`,
-                name: `${label} ${shapes.length + 1}`,
-                kind,
-                visible: true,
-                xMm: (draftRect.x0 + draftRect.x1) * 0.5,
-                yMm: (draftRect.y0 + draftRect.y1) * 0.5,
-                widthMm: Number(w.toFixed(1)),
-                heightMm: Number(h.toFixed(1)),
-                rotationDeg: 0,
-                cornerRadiusMm: isSlot ? Number((Math.min(w, h) * 0.5).toFixed(2)) : 0,
-                sides: 6,
-                depthMm: 4,
-                role: "cutout",
+              const dirX = draftRect.x1 >= draftRect.x0 ? 1 : -1;
+              const dirY = draftRect.y1 >= draftRect.y0 ? 1 : -1;
+              setPendingDim({
+                x0: draftRect.x0,
+                y0: draftRect.y0,
+                dirX,
+                dirY,
+                tool: toolMode,
+                wStr: w.toFixed(1),
+                hStr: h.toFixed(1),
+                sidesStr: "6",
               });
+            } else {
+              setDraftRect(null);
             }
-            setDraftRect(null);
           }
           dragState.current = "none";
         }}
@@ -339,7 +427,7 @@ export const VectorSketchView: React.FC<Props> = ({
             ? "Vector Sketch: Click & drag shapes to move · Right-drag: Pan · Scroll: Zoom"
             : toolMode === "polyline"
             ? "Click points to draw polyline · Double-click to finish"
-            : "Click & drag on the stock to draw shape"}
+            : "Click & drag to draw · Type exact size · Tab to switch · Enter to create"}
         </span>
         {toolMode === "polyline" && draftPoly.length >= 2 && (
           <button
@@ -350,6 +438,129 @@ export const VectorSketchView: React.FC<Props> = ({
           </button>
         )}
       </div>
+      {pendingDim && draftRect && (() => {
+        const anchor = worldToScreen(Math.max(draftRect.x0, draftRect.x1), Math.min(draftRect.y0, draftRect.y1));
+        const cw = canvasRef.current?.width ?? 640;
+        const ch = canvasRef.current?.height ?? 480;
+        const boxW = pendingDim.tool === "polygon" ? 290 : 228;
+        const left = Math.max(12, Math.min(cw - boxW - 12, anchor.x + 12));
+        const top = Math.max(56, Math.min(ch - 88, anchor.y + 12));
+        const handleDimKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+          if (e.key === "Tab") {
+            e.preventDefault();
+            const refs = pendingDim.tool === "polygon"
+              ? [widthInputRef.current, heightInputRef.current, sidesInputRef.current]
+              : [widthInputRef.current, heightInputRef.current];
+            const validRefs = refs.filter((el): el is HTMLInputElement => el !== null);
+            const idx = validRefs.indexOf(e.currentTarget);
+            if (validRefs.length > 0) {
+              const nextIdx = (idx + (e.shiftKey ? -1 : 1) + validRefs.length) % validRefs.length;
+              validRefs[nextIdx].focus();
+              validRefs[nextIdx].select();
+            }
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            commitPendingDim();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            cancelPendingDim();
+          }
+        };
+        const inputStyle: React.CSSProperties = {
+          width: 58,
+          padding: "4px 6px",
+          borderRadius: 5,
+          border: "1px solid var(--hc-accent-secondary, #38bdf8)",
+          background: "#0f172a",
+          color: "#f8fafc",
+          fontSize: 12,
+          fontWeight: 600,
+          outline: "none",
+        };
+        return (
+          <div
+            onPointerDown={(e) => e.stopPropagation()}
+            style={{
+              position: "absolute",
+              left,
+              top,
+              zIndex: 20,
+              padding: "8px 10px",
+              borderRadius: 9,
+              background: "rgba(15, 23, 42, 0.96)",
+              border: "1px solid var(--hc-accent-secondary, #38bdf8)",
+              boxShadow: "0 10px 26px rgba(0,0,0,0.55)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#cbd5e1" }}>
+                <span>{pendingDim.tool === "circle" ? "WØ" : "W"}</span>
+                <input
+                  ref={widthInputRef}
+                  type="number"
+                  step="0.5"
+                  min="0.5"
+                  value={pendingDim.wStr}
+                  onChange={(e) => updatePendingDim({ wStr: e.target.value })}
+                  onKeyDown={handleDimKeyDown}
+                  style={inputStyle}
+                />
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#cbd5e1" }}>
+                <span>{pendingDim.tool === "circle" ? "HØ" : "H"}</span>
+                <input
+                  ref={heightInputRef}
+                  type="number"
+                  step="0.5"
+                  min="0.5"
+                  value={pendingDim.hStr}
+                  onChange={(e) => updatePendingDim({ hStr: e.target.value })}
+                  onKeyDown={handleDimKeyDown}
+                  style={inputStyle}
+                />
+              </label>
+              {pendingDim.tool === "polygon" && (
+                <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#cbd5e1" }}>
+                  <span>S</span>
+                  <input
+                    ref={sidesInputRef}
+                    type="number"
+                    step="1"
+                    min="3"
+                    max="24"
+                    value={pendingDim.sidesStr}
+                    onChange={(e) => updatePendingDim({ sidesStr: e.target.value })}
+                    onKeyDown={handleDimKeyDown}
+                    style={{ ...inputStyle, width: 44 }}
+                  />
+                </label>
+              )}
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 10, color: "#94a3b8" }}>
+              <span>mm · Tab: switch · Enter: OK</span>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button
+                  type="button"
+                  onClick={cancelPendingDim}
+                  style={{ padding: "2px 7px", borderRadius: 4, border: "1px solid #475569", background: "transparent", color: "#cbd5e1", fontSize: 11, cursor: "pointer" }}
+                >
+                  Esc
+                </button>
+                <button
+                  type="button"
+                  onClick={commitPendingDim}
+                  style={{ padding: "2px 8px", borderRadius: 4, border: "none", background: "#16a34a", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                >
+                  OK
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

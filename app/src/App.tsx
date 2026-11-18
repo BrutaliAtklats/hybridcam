@@ -2081,7 +2081,14 @@ export default function App() {
       cancelAnimationFrame(animId);
       resizeObs.disconnect();
       window.removeEventListener("resize", onResize);
-      transformControls.dispose();
+      transformControls.disconnect();
+      transformControls.getHelper().traverse((child: any) => {
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) {
+          if (Array.isArray(child.material)) child.material.forEach((m: any) => m.dispose());
+          else child.material.dispose();
+        }
+      });
       controls.dispose();
       renderer.dispose();
       sceneObjectsRef.current = null;

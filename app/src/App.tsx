@@ -2985,12 +2985,12 @@ export default function App() {
         <nav style={{ display: "flex", gap: 4 }}>
           {(
             [
-              ["layout", "1. Design", "navDesign"],
-              ["relief", "2. Relief", "navRelief"],
-              ["toolpaths", "3. Toolpaths", "navToolpaths"],
-              ["simulate", "4. Simulate", "navSimulate"],
-              ["export", "5. Export", "navExport"],
-              ["run", "6. Run CNC", "play"],
+              ["layout", "Design", "navDesign"],
+              ["relief", "Relief", "navRelief"],
+              ["toolpaths", "Toolpaths", "navToolpaths"],
+              ["simulate", "Simulate", "navSimulate"],
+              ["export", "Export", "navExport"],
+              ["run", "Run CNC", "play"],
             ] as [WorkflowStep, string, DesignIconName][]
           ).map(([k, label, ic]) => (
             <button
@@ -3178,11 +3178,39 @@ export default function App() {
                     <option value="rectFrame">Rect Frame</option>
                     <option value="raisedDome">Raised Dome</option>
                   </select>
-                  <label style={UI.btnAccentSmall}>
-                    + Picture
-                    <input type="file" accept="image/*,.tif,.tiff,.exr" onChange={(e) => handleDepthMapUpload(e, false)} style={{ display: "none" }} />
-                  </label>
                 </div>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 6 }}>
+                <label style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 10px", background: "var(--hc-accent, #2563eb)", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 12, color: "#fff" }}>
+                  <DesignIcon name="picture" size={15} />
+                  <span>Add Depth Map</span>
+                  <input type="file" accept="image/*,.tif,.tiff,.exr" onChange={(e) => handleDepthMapUpload(e, false)} style={{ display: "none" }} />
+                </label>
+                <label style={{ ...UI.btnSecondary, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 10px", borderRadius: 8 }}>
+                  <DesignIcon name="model3d" size={15} />
+                  <span>Import .STL</span>
+                  <input
+                    type="file"
+                    accept=".stl"
+                    onChange={async (e) => {
+                      const f = e.target.files?.[0];
+                      if (!f) return;
+                      e.target.value = "";
+                      const buf = await f.arrayBuffer();
+                      const src = parseStlToDepthSource(buf, f.name.replace(/\.stl$/i, ""), 384);
+                      pushUndoSnapshot();
+                      const id = `layer-${Date.now()}`;
+                      setLayers((ls) => [
+                        ...ls,
+                        { id, name: src.label, visible: true, combineMode: "mergeHigh", weight: 1.0, source: src, placement: { ...DEFAULT_PLACEMENT, scale: 1.0 } },
+                      ]);
+                      setActiveLayerId(id);
+                      setLastSavedMsg(`Imported STL: ${f.name}`);
+                    }}
+                    style={{ display: "none" }}
+                  />
+                </label>
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
@@ -6070,8 +6098,8 @@ export default function App() {
                       onChange={(e) => setDefaultStartupStep(e.target.value as "layout" | "relief")}
                       style={{ ...UI.input, marginTop: 3 }}
                     >
-                      <option value="layout">1. Design</option>
-                      <option value="relief">2. 3D Relief</option>
+                      <option value="layout">Design</option>
+                      <option value="relief">Relief</option>
                     </select>
                   </div>
                   <div>

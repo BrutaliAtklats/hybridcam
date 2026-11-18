@@ -672,6 +672,108 @@ export default function App() {
     }
   }, [step, designMode]);
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) {
+        return;
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (step !== "layout") return;
+
+      const key = e.key.toLowerCase();
+      if (key === "1") { setDesignMode("picture"); setIsSketchingIn3d(false); return; }
+      if (key === "2") { setDesignMode("vector"); setIsSketchingIn3d(false); return; }
+      if (key === "3") { setDesignMode("model3d"); return; }
+
+      if (e.key === "Delete" || e.key === "Backspace") {
+        if (designMode === "vector" || (designMode === "model3d" && isSketchingIn3d)) {
+          if (activeVectorId) {
+            e.preventDefault();
+            setVectorShapes((vs) => {
+              const next = vs.filter((x) => x.id !== activeVectorId);
+              setActiveVectorId(next[0]?.id ?? "");
+              return next;
+            });
+          }
+          return;
+        }
+        if (designMode === "model3d" && !isSketchingIn3d) {
+          const targetSolidId = activeSolidId || solidModels[0]?.id;
+          if (targetSolidId) {
+            e.preventDefault();
+            setSolidModels((ms) => {
+              const next = ms.filter((x) => x.id !== targetSolidId);
+              setActiveSolidId(next[0]?.id ?? "");
+              return next;
+            });
+          }
+          return;
+        }
+        if (designMode === "picture" && activeLayerId && layers.length > 0) {
+          e.preventDefault();
+          pushUndoSnapshot();
+          setLayers((ls) => {
+            const next = ls.filter((l) => l.id !== activeLayerId);
+            setActiveLayerId(next[0]?.id ?? "");
+            return next;
+          });
+          return;
+        }
+      }
+
+      if (designMode === "vector" || (designMode === "model3d" && isSketchingIn3d)) {
+        if (key === "v") { setSketchTool("select"); return; }
+        if (key === "r") { setSketchTool("rect"); return; }
+        if (key === "c") { setSketchTool("circle"); return; }
+        if (key === "o") { setSketchTool("slot"); return; }
+        if (key === "p") { setSketchTool("polygon"); return; }
+        if (key === "l") { setSketchTool("polyline"); return; }
+        if (key === "g") { setSnapToGrid((s) => !s); return; }
+        if (e.key === "Escape") {
+          if (sketchTool !== "select") setSketchTool("select");
+          else if (isSketchingIn3d) setIsSketchingIn3d(false);
+          return;
+        }
+      } else if (designMode === "picture") {
+        if (key === "v" || key === "m") { setToolMode("move"); return; }
+        if (key === "b") { setToolMode("paintRaise"); return; }
+        if (key === "n") { setToolMode("paintLower"); return; }
+        if (key === "h") { setToolMode("paintSmooth"); return; }
+      } else if (designMode === "model3d" && !isSketchingIn3d) {
+        if (key === "k") { setSketchTool("rect"); setIsSketchingIn3d(true); return; }
+        if (key === "e") {
+          const id = `solid-${Date.now()}`;
+          setSolidModels((ms) => [
+            ...ms,
+            {
+              id,
+              name: `Extrude ${ms.length + 1}`,
+              kind: "extrude",
+              visible: true,
+              boolOp: "union",
+              xMm: 0,
+              yMm: 0,
+              zMm: 0,
+              widthMm: 50,
+              depthMm: 50,
+              heightMm: 10,
+              rotXDeg: 0,
+              rotYDeg: 0,
+              rotZDeg: 0,
+              bevelMm: 0,
+              sketchId: vectorShapes[0]?.id,
+            },
+          ]);
+          setActiveSolidId(id);
+          return;
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [step, designMode, isSketchingIn3d, sketchTool, activeVectorId, activeSolidId, solidModels, activeLayerId, layers.length, vectorShapes]);
+
   const gridW = Math.max(640, reliefSettings.resolution);
   const gridH = Math.max(64, Math.round((gridW * job.depthMm) / Math.max(1, job.widthMm)));
 
@@ -3230,18 +3332,8 @@ export default function App() {
                 </div>
               )}
 
-              {/* Alignment, Duplicate, Trim & Preview Toolbar */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 4 }}>
-                <ToolTileButton
-                  icon="centerX"
-                  label="Center X"
-                  onClick={() => { pushUndoSnapshot(); updateActivePlacement((p) => ({ ...p, offsetXMm: 0 })); }}
-                />
-                <ToolTileButton
-                  icon="centerY"
-                  label="Center Y"
-                  onClick={() => { pushUndoSnapshot(); updateActivePlacement((p) => ({ ...p, offsetYMm: 0 })); }}
-                />
+              {/* Duplicate & Trim Toolbar */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
                 <ToolTileButton
                   icon="duplicate"
                   label="Duplicate"
@@ -3346,34 +3438,14 @@ export default function App() {
                 ))}
               </div>
 
-              {/* Paint Tool & Move Mode */}
-              <div style={{ padding: 10, background: "var(--hc-panel-bg, #1a1f28)", border: "1px solid var(--hc-border, #262c36)", borderRadius: 8, display: "flex", flexDirection: "column", gap: 8 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--hc-text, #e6edf3)" }}>Canvas Tool</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 5 }}>
-                  {(
-                    [
-                      ["move", "Move", "move"],
-                      ["paintRaise", "Raise +", "paintRaise"],
-                      ["paintLower", "Lower -", "paintLower"],
-                      ["paintSmooth", "Smooth", "paintSmooth"],
-                    ] as [LayoutToolMode, string, DesignIconName][]
-                  ).map(([m, lbl, ic]) => (
-                    <ToolTileButton
-                      key={m}
-                      icon={ic}
-                      label={lbl}
-                      active={toolMode === m}
-                      onClick={() => setToolMode(m)}
-                    />
-                  ))}
+              {/* Brush Settings (when painting) */}
+              {toolMode !== "move" && (
+                <div style={{ padding: 10, background: "var(--hc-panel-bg, #1a1f28)", border: "1px solid var(--hc-border, #262c36)", borderRadius: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--hc-text, #e6edf3)" }}>Brush Settings</div>
+                  <SliderRow label="Brush Size" hint="Radius of the paint brush on the board." unit="mm" min={1} max={40} step={1} value={brushRadiusMm} onChange={setBrushRadiusMm} />
+                  <SliderRow label="Brush Strength" hint="How strongly each stroke raises, lowers, or smooths." unit="%" min={5} max={100} step={5} value={Math.round(brushStrength * 100)} onChange={(v) => setBrushStrength(v / 100)} />
                 </div>
-                {toolMode !== "move" && (
-                  <>
-                    <SliderRow label="Brush Size" hint="Radius of the paint brush on the board." unit="mm" min={1} max={40} step={1} value={brushRadiusMm} onChange={setBrushRadiusMm} />
-                    <SliderRow label="Brush Strength" hint="How strongly each stroke raises, lowers, or smooths." unit="%" min={5} max={100} step={5} value={Math.round(brushStrength * 100)} onChange={(v) => setBrushStrength(v / 100)} />
-                  </>
-                )}
-              </div>
+              )}
 
               {/* Active Layer Controls */}
               {activeLayer && (
@@ -3485,26 +3557,8 @@ export default function App() {
                   </div>
 
                   <div style={UI.panel}>
-                    <span style={UI.sectionTitle}>SKETCH TOOLS</span>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
-                      {(
-                        [
-                          ["select", "Select", "select"],
-                          ["rect", "Rectangle", "rect"],
-                          ["circle", "Circle", "circle"],
-                          ["slot", "Slot", "rect"],
-                          ["polygon", "Polygon", "polygon"],
-                          ["polyline", "Polyline", "polyline"],
-                        ] as [SketchToolMode, string, DesignIconName][]
-                      ).map(([k, lbl, ic]) => (
-                        <ToolTileButton
-                          key={k}
-                          icon={ic}
-                          label={lbl}
-                          active={sketchTool === k}
-                          onClick={() => setSketchTool(k)}
-                        />
-                      ))}
+                    <span style={UI.sectionTitle}>TEXT & QUICK SHAPES</span>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
                       <ToolTileButton
                         icon="text"
                         label="Text Box"
@@ -3687,71 +3741,33 @@ export default function App() {
                     </h3>
                     <button
                       type="button"
-                      onClick={() => setIsSketchingIn3d(false)}
-                      style={{ ...UI.btnAccentSmall, background: "#16a34a" }}
+                      onClick={() => {
+                        const id = `vec-${Date.now()}`;
+                        setVectorShapes((vs) => [
+                          ...vs,
+                          {
+                            id,
+                            name: `Sketch Rect ${vs.length + 1}`,
+                            kind: "rect",
+                            visible: true,
+                            xMm: 0,
+                            yMm: 0,
+                            widthMm: 40,
+                            heightMm: 24,
+                            rotationDeg: 0,
+                            cornerRadiusMm: 0,
+                            sides: 4,
+                            depthMm: 5,
+                            role: "cutout",
+                            sketchZMm: sketchPlaneZMm,
+                          },
+                        ]);
+                        setActiveVectorId(id);
+                      }}
+                      style={{ ...UI.btnSecondary, fontSize: 11, padding: "4px 8px" }}
                     >
-                      ✓ Finish Sketch
+                      + Centered Rect
                     </button>
-                  </div>
-
-                  {/* SKETCH PALETTE */}
-                  <div style={UI.panel}>
-                    <span style={UI.sectionTitle}>DRAW PROFILE</span>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
-                      {(
-                        [
-                          ["select", "Select", "select"],
-                          ["rect", "Rectangle", "rect"],
-                          ["circle", "Circle", "circle"],
-                          ["slot", "Slot", "rect"],
-                          ["polygon", "Polygon", "polygon"],
-                          ["polyline", "Polyline", "polyline"],
-                        ] as [SketchToolMode, string, DesignIconName][]
-                      ).map(([k, lbl, ic]) => (
-                        <ToolTileButton
-                          key={k}
-                          icon={ic}
-                          label={lbl}
-                          active={sketchTool === k}
-                          onClick={() => setSketchTool(k)}
-                        />
-                      ))}
-                    </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 2 }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, cursor: "pointer" }}>
-                        <input type="checkbox" checked={snapToGrid} onChange={(e) => setSnapToGrid(e.target.checked)} />
-                        Snap {snapStepMm}mm
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const id = `vec-${Date.now()}`;
-                          setVectorShapes((vs) => [
-                            ...vs,
-                            {
-                              id,
-                              name: `Sketch Rect ${vs.length + 1}`,
-                              kind: "rect",
-                              visible: true,
-                              xMm: 0,
-                              yMm: 0,
-                              widthMm: 40,
-                              heightMm: 24,
-                              rotationDeg: 0,
-                              cornerRadiusMm: 0,
-                              sides: 4,
-                              depthMm: 5,
-                              role: "cutout",
-                              sketchZMm: sketchPlaneZMm,
-                            },
-                          ]);
-                          setActiveVectorId(id);
-                        }}
-                        style={{ ...UI.btnSecondary, fontSize: 11, padding: "4px 8px" }}
-                      >
-                        + Centered Rect
-                      </button>
-                    </div>
                   </div>
 
                   {/* Sketch Profiles List */}
@@ -3864,41 +3880,12 @@ export default function App() {
                 <>
                   <div style={{ ...UI.pageHeader, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                     <h3 style={UI.pageTitle}>SOLID · 3D Modeler</h3>
-                    <button
-                      onClick={() => {
-                        const id = `solid-${Date.now()}`;
-                        const stockNode: SolidModelNode = {
-                          id,
-                          name: "Stock Blank",
-                          kind: "box",
-                          visible: true,
-                          boolOp: "union",
-                          xMm: 0,
-                          yMm: 0,
-                          zMm: -job.thicknessMm * 0.5,
-                          widthMm: job.widthMm,
-                          depthMm: job.depthMm,
-                          heightMm: job.thicknessMm,
-                          rotXDeg: 0,
-                          rotYDeg: 0,
-                          rotZDeg: 0,
-                          bevelMm: 0,
-                        };
-                        setSolidModels((ms) => [stockNode, ...ms]);
-                        setActiveSolidId(id);
-                      }}
-                      title="Insert full stock block as base body"
-                      style={{ ...UI.btnSecondary, display: "flex", alignItems: "center", gap: 5, padding: "5px 9px", fontSize: 11, color: "var(--hc-accent-secondary, #38bdf8)", borderColor: "var(--hc-accent, #1e3a5f)" }}
-                    >
-                      <DesignIcon name="stockBlank" size={15} />
-                      <span>Stock Blank</span>
-                    </button>
                   </div>
 
-                  {/* FUSION-STYLE SKETCH LAUNCHER */}
+                  {/* SKETCH PLANE & EXTRUDE */}
                   <div style={UI.panel}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
-                      <span style={UI.sectionTitle}>SKETCH</span>
+                      <span style={UI.sectionTitle}>SKETCH PLANE</span>
                       <select
                         value={sketchPlaneZMm}
                         onChange={(e) => setSketchPlaneZMm(Number(e.target.value))}
@@ -3915,82 +3902,48 @@ export default function App() {
                         })()}
                       </select>
                     </div>
-                    <div style={{ display: "grid", gridTemplateColumns: vectorShapes.length > 0 ? "1.3fr 1fr 1fr" : "1fr", gap: 5 }}>
+                    {vectorShapes.length > 0 && (
                       <button
                         type="button"
                         onClick={() => {
-                          setSketchTool("rect");
-                          setIsSketchingIn3d(true);
+                          const sk = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
+                          const extH = Math.max(1, sk.depthMm || 5);
+                          const sz = sk.sketchZMm ?? 0;
+                          const id = `solid-${Date.now()}`;
+                          const node: SolidModelNode = {
+                            id,
+                            name: `Extrude ${sk.name}`,
+                            kind: "extrude",
+                            visible: true,
+                            boolOp: solidModels.length === 0 ? "union" : "union",
+                            xMm: sk.xMm,
+                            yMm: sk.yMm,
+                            zMm: sz + extH * 0.5,
+                            widthMm: sk.widthMm,
+                            depthMm: sk.heightMm,
+                            heightMm: extH,
+                            rotXDeg: 0,
+                            rotYDeg: 0,
+                            rotZDeg: sk.rotationDeg,
+                            bevelMm: 0,
+                            sketchId: sk.id,
+                          };
+                          setSolidModels((ms) => [...ms, node]);
+                          setActiveSolidId(id);
                         }}
-                        style={{ ...UI.btnAccentSmall, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "7px 8px" }}
+                        style={{ ...UI.btnSecondary, fontSize: 11, color: "#4ade80" }}
                       >
-                        <DesignIcon name="vector" size={14} />
-                        <span>+ Create Sketch</span>
+                        Extrude Active Sketch
                       </button>
-                      {vectorShapes.length > 0 && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const sk = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
-                              setActiveVectorId(sk.id);
-                              setSketchPlaneZMm(sk.sketchZMm ?? 0);
-                              setIsSketchingIn3d(true);
-                            }}
-                            style={{ ...UI.btnSecondary, fontSize: 11 }}
-                          >
-                            Edit Sketch
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const sk = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
-                              const extH = Math.max(1, sk.depthMm || 5);
-                              const sz = sk.sketchZMm ?? 0;
-                              const id = `solid-${Date.now()}`;
-                              const node: SolidModelNode = {
-                                id,
-                                name: `Extrude ${sk.name}`,
-                                kind: "extrude",
-                                visible: true,
-                                boolOp: solidModels.length === 0 ? "union" : "union",
-                                xMm: sk.xMm,
-                                yMm: sk.yMm,
-                                zMm: sz + extH * 0.5,
-                                widthMm: sk.widthMm,
-                                depthMm: sk.heightMm,
-                                heightMm: extH,
-                                rotXDeg: 0,
-                                rotYDeg: 0,
-                                rotZDeg: sk.rotationDeg,
-                                bevelMm: 0,
-                                sketchId: sk.id,
-                              };
-                              setSolidModels((ms) => [...ms, node]);
-                              setActiveSolidId(id);
-                            }}
-                            style={{ ...UI.btnSecondary, fontSize: 11, color: "#4ade80" }}
-                          >
-                            Extrude Sk
-                          </button>
-                        </>
-                      )}
-                    </div>
+                    )}
                   </div>
 
-                  {/* CREATE Toolbar (Fusion 360 style) */}
+                  {/* EXTRA PRIMITIVES */}
                   <div style={UI.panel}>
-                    <span style={UI.sectionTitle}>CREATE</span>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
+                    <span style={UI.sectionTitle}>MORE PRIMITIVES</span>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
                       {(
                         [
-                          ["extrude", "Extrude", "union", "extrude"],
-                          ["revolve", "Revolve", "union", "revolve"],
-                          ["hole", "Hole (Cut)", "subtract", "hole"],
-                          ["box", "Box", "union", "box"],
-                          ["cylinder", "Cylinder", "union", "cylinder"],
-                          ["pipe", "Pipe", "union", "pipe"],
-                          ["sphere", "Sphere", "union", "sphere"],
                           ["torus", "Torus", "union", "torus"],
                           ["wedge", "Wedge", "union", "wedge"],
                         ] as [SolidPrimitiveKind, string, BooleanOp, DesignIconName][]
@@ -4044,13 +3997,7 @@ export default function App() {
                     return (
                       <div style={UI.panel}>
                         <span style={UI.sectionTitle}>MODIFY · {activeSolid.name}</span>
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
-                          <ToolTileButton
-                            icon="pull"
-                            label="Pull +2mm"
-                            title="Press/Pull +2mm Height"
-                            onClick={() => patchSolid({ heightMm: Math.min(job.thicknessMm * 3, activeSolid.heightMm + 2) })}
-                          />
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
                           <ToolTileButton
                             icon="push"
                             label="Push -2mm"
@@ -4062,12 +4009,6 @@ export default function App() {
                             label="Duplicate"
                             title="Duplicate selected feature"
                             onClick={() => cloneWith("Copy", { xMm: activeSolid.xMm + 15 })}
-                          />
-                          <ToolTileButton
-                            icon="mirrorX"
-                            label="Mirror X"
-                            title="Mirror across X=0"
-                            onClick={() => cloneWith("MirX", { xMm: -activeSolid.xMm, rotYDeg: -activeSolid.rotYDeg, rotZDeg: -activeSolid.rotZDeg })}
                           />
                           <ToolTileButton
                             icon="mirrorY"
@@ -6737,16 +6678,33 @@ export default function App() {
                         </div>
                       </div>
                       <div style={{ ...groupBox, borderRight: "none", paddingRight: 0 }}>
-                        <span style={groupLbl}>Align</span>
+                        <span style={groupLbl}>Align & Edit</span>
                         <div style={{ display: "flex", gap: 4 }}>
-                          <button type="button" onClick={() => { pushUndoSnapshot(); updateActivePlacement((p) => ({ ...p, offsetXMm: 0 })); }} style={ribbonBtn(false)}>
+                          <button type="button" title="Center X" onClick={() => { pushUndoSnapshot(); updateActivePlacement((p) => ({ ...p, offsetXMm: 0 })); }} style={ribbonBtn(false)}>
                             <DesignIcon name="centerX" size={13} />
                             <span>Center X</span>
                           </button>
-                          <button type="button" onClick={() => { pushUndoSnapshot(); updateActivePlacement((p) => ({ ...p, offsetYMm: 0 })); }} style={ribbonBtn(false)}>
+                          <button type="button" title="Center Y" onClick={() => { pushUndoSnapshot(); updateActivePlacement((p) => ({ ...p, offsetYMm: 0 })); }} style={ribbonBtn(false)}>
                             <DesignIcon name="centerY" size={13} />
                             <span>Center Y</span>
                           </button>
+                          {activeLayer && (
+                            <button
+                              type="button"
+                              title="Delete selected layer (Del)"
+                              onClick={() => {
+                                pushUndoSnapshot();
+                                setLayers((ls) => {
+                                  const next = ls.filter((l) => l.id !== activeLayer.id);
+                                  setActiveLayerId(next[0]?.id ?? "");
+                                  return next;
+                                });
+                              }}
+                              style={ribbonBtn(false, true)}
+                            >
+                              <span>Delete</span>
+                            </button>
+                          )}
                         </div>
                       </div>
                     </>
@@ -6775,15 +6733,32 @@ export default function App() {
                         </div>
                       </div>
                       <div style={{ ...groupBox, borderRight: "none", paddingRight: 0 }}>
-                        <span style={groupLbl}>Constraints</span>
+                        <span style={groupLbl}>Constraints & Edit</span>
                         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                          <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#cbd5e1", cursor: "pointer", padding: "4px 6px", borderRadius: 6, background: "rgba(30, 41, 59, 0.55)" }}>
+                          <label title="Toggle Grid Snap (G)" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#cbd5e1", cursor: "pointer", padding: "4px 6px", borderRadius: 6, background: "rgba(30, 41, 59, 0.55)" }}>
                             <input type="checkbox" checked={snapToGrid} onChange={(e) => setSnapToGrid(e.target.checked)} />
                             Snap {snapStepMm}mm
                           </label>
+                          {activeVectorId && (
+                            <button
+                              type="button"
+                              title="Delete selected shape (Del)"
+                              onClick={() => {
+                                setVectorShapes((vs) => {
+                                  const next = vs.filter((x) => x.id !== activeVectorId);
+                                  setActiveVectorId(next[0]?.id ?? "");
+                                  return next;
+                                });
+                              }}
+                              style={ribbonBtn(false, true)}
+                            >
+                              <span>Delete</span>
+                            </button>
+                          )}
                           {isSketchingIn3d && (
                             <button
                               type="button"
+                              title="Finish Sketch (Esc)"
                               onClick={() => setIsSketchingIn3d(false)}
                               style={{ ...ribbonBtn(true), background: "#16a34a", borderColor: "#22c55e" }}
                             >
@@ -6903,6 +6878,7 @@ export default function App() {
                               </button>
                               <button
                                 type="button"
+                                title="Mirror across X=0"
                                 onClick={() => {
                                   const id = `solid-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
                                   setSolidModels((ms) => [...ms, { ...activeSolid, id, name: `${activeSolid.name} Mirror`, xMm: -activeSolid.xMm }]);
@@ -6912,6 +6888,20 @@ export default function App() {
                               >
                                 <DesignIcon name="mirrorX" size={13} />
                                 <span>Mirror X</span>
+                              </button>
+                              <button
+                                type="button"
+                                title="Delete selected solid (Del)"
+                                onClick={() => {
+                                  setSolidModels((ms) => {
+                                    const next = ms.filter((x) => x.id !== activeSolid.id);
+                                    setActiveSolidId(next[0]?.id ?? "");
+                                    return next;
+                                  });
+                                }}
+                                style={ribbonBtn(false, true)}
+                              >
+                                <span>Delete</span>
                               </button>
                             </>
                           )}

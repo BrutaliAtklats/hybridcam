@@ -225,14 +225,49 @@ Settings is organized into 4 sub-tabs:
 ## 11. Keyboard Shortcuts & Troubleshooting
 
 ### Keyboard Shortcuts
+
+#### Global & Simulation
 | Shortcut | Action |
 | :--- | :--- |
 | `Ctrl + S` | Save Project (`.hcam`) |
 | `Ctrl + Z` / `Ctrl + Y` | Undo / Redo (Design & 3D Sculpt) |
-| `1` – `6` | Switch tabs (`Design` → `Run CNC`) |
-| `R` | Reset 3D camera to Isometric |
 | `Space` | Play / Pause Simulation (on **Simulate** tab) |
-| `Delete` / `Backspace` | Delete selected layer (on **Design** tab) |
+
+#### Design Workspace (Floating Top Toolbar)
+| Shortcut | Action |
+| :--- | :--- |
+| `1` | Switch to **Photo** mode |
+| `2` | Switch to **Sketch** mode |
+| `3` | Switch to **3D Model** mode |
+| `Delete` / `Backspace` | Delete selected shape, 3D solid, or photo layer |
+
+#### Sketch Mode (2D CAD & 3D Create Sketch)
+| Shortcut | Action |
+| :--- | :--- |
+| `V` | **Select** & drag shapes |
+| `R` | **Rectangle** tool |
+| `C` | **Circle** tool |
+| `O` | **Slot** tool |
+| `P` | **Polygon** tool |
+| `L` | **Polyline** tool |
+| `G` | Toggle **Snap to Grid** |
+| `Tab` / `Shift + Tab` | Switch between size entry boxes (`W`, `H`, `S`) after dragging a shape |
+| `Enter` | Commit shape with entered dimensions |
+| `Escape` | Cancel pending shape / return to **Select** / finish 3D sketch |
+
+#### Photo Mode
+| Shortcut | Action |
+| :--- | :--- |
+| `V` or `M` | **Move** tool |
+| `B` | **Raise +** brush |
+| `N` | **Lower -** brush |
+| `H` | **Smooth** brush |
+
+#### 3D Model Mode
+| Shortcut | Action |
+| :--- | :--- |
+| `K` | **+ Create Sketch** on selected Z plane |
+| `E` | Quick **Extrude** |
 
 ### Troubleshooting
 - **Wireframe looks too dense**: Use `Clay` or `Material` for visual inspection; `Wire` automatically decimates dense relief grids to `≤ 72×72` for readability.

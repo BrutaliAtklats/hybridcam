@@ -56,6 +56,7 @@ export const VectorSketchView: React.FC<Props> = ({
   const [hoverPt, setHoverPt] = useState<[number, number] | null>(null);
   const dragState = useRef<"none" | "move" | "draw" | "pan">("none");
   const lastMouse = useRef({ x: 0, y: 0 });
+  const moveStart = useRef<{ id: string; rawX: number; rawY: number; shapeX: number; shapeY: number } | null>(null);
   const widthInputRef = useRef<HTMLInputElement | null>(null);
   const heightInputRef = useRef<HTMLInputElement | null>(null);
   const sidesInputRef = useRef<HTMLInputElement | null>(null);
@@ -327,7 +328,8 @@ export const VectorSketchView: React.FC<Props> = ({
           if (pendingDim) {
             cancelPendingDim();
           }
-          const [wx, wy] = screenToWorld(e.clientX, e.clientY).map(snap) as [number, number];
+          const [rawX, rawY] = screenToWorld(e.clientX, e.clientY);
+          const [wx, wy] = [snap(rawX), snap(rawY)];
           if (toolMode === "polyline") {
             setDraftPoly((pts) => [...pts, [wx, wy]]);
             return;
@@ -337,18 +339,33 @@ export const VectorSketchView: React.FC<Props> = ({
             setDraftRect({ x0: wx, y0: wy, x1: wx, y1: wy });
             return;
           }
-          // Select hit test
+          // Select hit test (uses unsnapped rawX/rawY + polyline bounds with 4mm padding)
           const hit = [...shapes].reverse().find((s) => {
             if (!s.visible) return false;
-            return Math.abs(wx - s.xMm) <= s.widthMm * 0.55 && Math.abs(wy - s.yMm) <= s.heightMm * 0.55;
+            const pts = shapeToPolylineMm(s);
+            if (pts.length >= 2) {
+              let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+              for (const [px, py] of pts) {
+                if (px < minX) minX = px;
+                if (px > maxX) maxX = px;
+                if (py < minY) minY = py;
+                if (py > maxY) maxY = py;
+              }
+              return rawX >= minX - 4 && rawX <= maxX + 4 && rawY >= minY - 4 && rawY <= maxY + 4;
+            }
+            return Math.abs(rawX - s.xMm) <= s.widthMm * 0.55 + 4 && Math.abs(rawY - s.yMm) <= s.heightMm * 0.55 + 4;
           });
           if (hit) {
             onSelectShape(hit.id);
+            moveStart.current = { id: hit.id, rawX, rawY, shapeX: hit.xMm, shapeY: hit.yMm };
             dragState.current = "move";
+          } else {
+            onSelectShape("");
           }
         }}
         onPointerMove={(e) => {
-          const [wx, wy] = screenToWorld(e.clientX, e.clientY).map(snap) as [number, number];
+          const [rawX, rawY] = screenToWorld(e.clientX, e.clientY);
+          const [wx, wy] = [snap(rawX), snap(rawY)];
           setHoverPt([wx, wy]);
           if (dragState.current === "pan") {
             const dx = e.clientX - lastMouse.current.x;
@@ -361,20 +378,12 @@ export const VectorSketchView: React.FC<Props> = ({
             setDraftRect({ ...draftRect, x1: wx, y1: wy });
             return;
           }
-          if (dragState.current === "move" && activeShapeId) {
-            const canvas = canvasRef.current;
-            if (!canvas) return;
-            const pxPerMm = getScalePxPerMm(canvas.width, canvas.height);
-            const dxMm = (e.clientX - lastMouse.current.x) / pxPerMm;
-            const dyMm = -(e.clientY - lastMouse.current.y) / pxPerMm;
-            lastMouse.current = { x: e.clientX, y: e.clientY };
-            const cur = shapes.find((s) => s.id === activeShapeId);
-            if (cur) {
-              onUpdateShape(cur.id, {
-                xMm: snap(cur.xMm + dxMm),
-                yMm: snap(cur.yMm + dyMm),
-              });
-            }
+          if (dragState.current === "move" && moveStart.current) {
+            const ms = moveStart.current;
+            onUpdateShape(ms.id, {
+              xMm: Number(snap(ms.shapeX + (rawX - ms.rawX)).toFixed(2)),
+              yMm: Number(snap(ms.shapeY + (rawY - ms.rawY)).toFixed(2)),
+            });
           }
         }}
         onPointerUp={() => {
@@ -399,6 +408,7 @@ export const VectorSketchView: React.FC<Props> = ({
             }
           }
           dragState.current = "none";
+          moveStart.current = null;
         }}
         onDoubleClick={() => {
           if (toolMode === "polyline") finishPolyline();

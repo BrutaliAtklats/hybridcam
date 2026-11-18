@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { JobConfig } from "./camEngine";
 import { shapeToPolylineMm, VectorRole, VectorShape, VectorShapeKind } from "./vectorSketch";
 
-export type SketchToolMode = "select" | "rect" | "circle" | "polygon" | "polyline";
+export type SketchToolMode = "select" | "rect" | "circle" | "slot" | "polygon" | "polyline";
 
 interface Props {
   job: JobConfig;
@@ -10,6 +10,8 @@ interface Props {
   activeShapeId: string;
   toolMode: SketchToolMode;
   snapToGrid: boolean;
+  snapStepMm?: number;
+  sketchPlaneLabel?: string;
   onSelectShape: (id: string) => void;
   onAddShape: (shape: VectorShape) => void;
   onUpdateShape: (id: string, patch: Partial<VectorShape>) => void;
@@ -28,6 +30,8 @@ export const VectorSketchView: React.FC<Props> = ({
   activeShapeId,
   toolMode,
   snapToGrid,
+  snapStepMm = 5,
+  sketchPlaneLabel,
   onSelectShape,
   onAddShape,
   onUpdateShape,
@@ -44,7 +48,7 @@ export const VectorSketchView: React.FC<Props> = ({
   const getScalePxPerMm = (cw: number, ch: number) =>
     Math.min((cw - 80) / Math.max(1, job.widthMm), (ch - 80) / Math.max(1, job.depthMm)) * viewZoom;
 
-  const snap = (v: number) => (snapToGrid ? Math.round(v / 5) * 5 : v);
+  const snap = (v: number) => (snapToGrid ? Math.round(v / snapStepMm) * snapStepMm : v);
 
   const screenToWorld = (clientX: number, clientY: number): [number, number] => {
     const canvas = canvasRef.current;
@@ -285,8 +289,9 @@ export const VectorSketchView: React.FC<Props> = ({
             const w = Math.abs(draftRect.x1 - draftRect.x0);
             const h = Math.abs(draftRect.y1 - draftRect.y0);
             if (w >= 2 && h >= 2) {
-              const kind = toolMode as VectorShapeKind;
-              const label = kind === "rect" ? "Rectangle" : kind === "circle" ? "Circle" : "Polygon";
+              const isSlot = toolMode === "slot";
+              const kind: VectorShapeKind = isSlot ? "rect" : (toolMode as VectorShapeKind);
+              const label = isSlot ? "Slot" : kind === "rect" ? "Rectangle" : kind === "circle" ? "Circle" : "Polygon";
               onAddShape({
                 id: `vec-${Date.now()}`,
                 name: `${label} ${shapes.length + 1}`,
@@ -297,7 +302,7 @@ export const VectorSketchView: React.FC<Props> = ({
                 widthMm: Number(w.toFixed(1)),
                 heightMm: Number(h.toFixed(1)),
                 rotationDeg: 0,
-                cornerRadiusMm: 0,
+                cornerRadiusMm: isSlot ? Number((Math.min(w, h) * 0.5).toFixed(2)) : 0,
                 sides: 6,
                 depthMm: 4,
                 role: "cutout",
@@ -329,6 +334,7 @@ export const VectorSketchView: React.FC<Props> = ({
         }}
       >
         <span>
+          {sketchPlaneLabel ? `${sketchPlaneLabel} · ` : ""}
           {toolMode === "select"
             ? "Vector Sketch: Click & drag shapes to move · Right-drag: Pan · Scroll: Zoom"
             : toolMode === "polyline"

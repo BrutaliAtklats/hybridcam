@@ -511,6 +511,8 @@ export default function App() {
   );
   const [activeVectorId, setActiveVectorId] = useState<string>("");
   const [sketchTool, setSketchTool] = useState<SketchToolMode>("select");
+  const [isSketchingIn3d, setIsSketchingIn3d] = useState<boolean>(false);
+  const [sketchPlaneZMm, setSketchPlaneZMm] = useState<number>(0);
   const [solidModels, setSolidModels] = useState<SolidModelNode[]>(() =>
     loadJson<SolidModelNode[]>("hybridcam.solidModels", [])
   );
@@ -2086,6 +2088,26 @@ export default function App() {
         edgeLines.position.set(0, 0, topZ);
         dynamicGroup.add(edgeLines);
       }
+      // Render 2D sketches as crisp 3D blue sketch profiles on their sketch plane
+      for (const vs of vectorShapes) {
+        if (!vs.visible) continue;
+        const pts2d = shapeToPolylineMm(vs);
+        if (pts2d.length < 2) continue;
+        const zPlane = topZ + (vs.sketchZMm ?? 0) + 0.15;
+        const pts3d = pts2d.map(([x, y]) => new THREE.Vector3(x, y, zPlane));
+        const skGeo = new THREE.BufferGeometry().setFromPoints(pts3d);
+        const isSel = vs.id === activeVectorId;
+        const skMat = new THREE.LineBasicMaterial({
+          color: isSel ? 0x38bdf8 : 0x60a5fa,
+          transparent: true,
+          opacity: isSel ? 1.0 : 0.72,
+        });
+        const skObj =
+          vs.kind === "polyline"
+            ? new THREE.Line(skGeo, skMat)
+            : new THREE.LineLoop(skGeo, skMat);
+        dynamicGroup.add(skObj);
+      }
       needsRenderRef.current = true;
       return;
     }
@@ -2275,6 +2297,7 @@ export default function App() {
     isModel3dView ? solidModels : null,
     isModel3dView ? activeSolidId : "",
     isModel3dView ? vectorShapes : null,
+    isModel3dView ? activeVectorId : "",
   ]);
 
   // 2b. Static / Semi-static 3D Overlays (Stock wire, Clamps, Axes, Grid, Toolpath lines)
@@ -3519,6 +3542,7 @@ export default function App() {
                           ["select", "Select", "select"],
                           ["rect", "Rectangle", "rect"],
                           ["circle", "Circle", "circle"],
+                          ["slot", "Slot", "rect"],
                           ["polygon", "Polygon", "polygon"],
                           ["polyline", "Polyline", "polyline"],
                         ] as [SketchToolMode, string, DesignIconName][]
@@ -3704,7 +3728,189 @@ export default function App() {
                 </>
               )}
 
-              {designMode === "model3d" && (
+              {designMode === "model3d" && isSketchingIn3d && (
+                <>
+                  <div style={{ ...UI.pageHeader, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                    <h3 style={{ ...UI.pageTitle, display: "flex", alignItems: "center", gap: 6 }}>
+                      <DesignIcon name="vector" size={16} />
+                      <span>SKETCH · Z={sketchPlaneZMm.toFixed(1)}mm</span>
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() => setIsSketchingIn3d(false)}
+                      style={{ ...UI.btnAccentSmall, background: "#16a34a" }}
+                    >
+                      ✓ Finish Sketch
+                    </button>
+                  </div>
+
+                  {/* SKETCH PALETTE */}
+                  <div style={UI.panel}>
+                    <span style={UI.sectionTitle}>DRAW PROFILE</span>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
+                      {(
+                        [
+                          ["select", "Select", "select"],
+                          ["rect", "Rectangle", "rect"],
+                          ["circle", "Circle", "circle"],
+                          ["slot", "Slot", "rect"],
+                          ["polygon", "Polygon", "polygon"],
+                          ["polyline", "Polyline", "polyline"],
+                        ] as [SketchToolMode, string, DesignIconName][]
+                      ).map(([k, lbl, ic]) => (
+                        <ToolTileButton
+                          key={k}
+                          icon={ic}
+                          label={lbl}
+                          active={sketchTool === k}
+                          onClick={() => setSketchTool(k)}
+                        />
+                      ))}
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 2 }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, cursor: "pointer" }}>
+                        <input type="checkbox" checked={snapToGrid} onChange={(e) => setSnapToGrid(e.target.checked)} />
+                        Snap {snapStepMm}mm
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const id = `vec-${Date.now()}`;
+                          setVectorShapes((vs) => [
+                            ...vs,
+                            {
+                              id,
+                              name: `Sketch Rect ${vs.length + 1}`,
+                              kind: "rect",
+                              visible: true,
+                              xMm: 0,
+                              yMm: 0,
+                              widthMm: 40,
+                              heightMm: 24,
+                              rotationDeg: 0,
+                              cornerRadiusMm: 0,
+                              sides: 4,
+                              depthMm: 5,
+                              role: "cutout",
+                              sketchZMm: sketchPlaneZMm,
+                            },
+                          ]);
+                          setActiveVectorId(id);
+                        }}
+                        style={{ ...UI.btnSecondary, fontSize: 11, padding: "4px 8px" }}
+                      >
+                        + Centered Rect
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Sketch Profiles List */}
+                  <div style={UI.panel}>
+                    <span style={UI.sectionTitle}>SKETCH PROFILES ({vectorShapes.length})</span>
+                    {vectorShapes.length === 0 ? (
+                      <div style={{ fontSize: 12, color: "var(--hc-muted, #9ca3af)" }}>
+                        Pick a draw tool above and drag on the canvas, then click <b>Finish Sketch</b> to Extrude or Cut in 3D.
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        {vectorShapes.map((sh) => (
+                          <div
+                            key={sh.id}
+                            onClick={() => setActiveVectorId(sh.id)}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              padding: "6px 8px",
+                              borderRadius: 6,
+                              cursor: "pointer",
+                              border: activeVectorId === sh.id ? "1px solid var(--hc-accent-secondary, #38bdf8)" : "1px solid var(--hc-border, #262c36)",
+                              background: activeVectorId === sh.id ? "color-mix(in srgb, var(--hc-accent, #2563eb) 24%, transparent)" : "var(--hc-subpanel-bg, #111419)",
+                              fontSize: 12,
+                            }}
+                          >
+                            <span style={{ fontWeight: 600 }}>{sh.name}</span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setVectorShapes((vs) => vs.filter((x) => x.id !== sh.id));
+                              }}
+                              style={{ background: "transparent", border: "none", color: "var(--hc-muted, #9ca3af)", cursor: "pointer" }}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Active Sketch Dimensions & Quick Finish Actions */}
+                  {(() => {
+                    const activeVec = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
+                    if (!activeVec) return null;
+                    const patchVec = (patch: Partial<VectorShape>) =>
+                      setVectorShapes((vs) => vs.map((x) => (x.id === activeVec.id ? { ...x, ...patch } : x)));
+                    const finishAndExtrude = (op: BooleanOp) => {
+                      const extH = Math.max(1, activeVec.depthMm || 5);
+                      const id = `solid-${Date.now()}`;
+                      const node: SolidModelNode = {
+                        id,
+                        name: `${op === "subtract" ? "Cut" : "Extrude"} ${activeVec.name}`,
+                        kind: "extrude",
+                        visible: true,
+                        boolOp: solidModels.length === 0 ? "union" : op,
+                        xMm: activeVec.xMm,
+                        yMm: activeVec.yMm,
+                        zMm: op === "subtract" ? sketchPlaneZMm - extH * 0.5 : sketchPlaneZMm + extH * 0.5,
+                        widthMm: activeVec.widthMm,
+                        depthMm: activeVec.heightMm,
+                        heightMm: extH,
+                        rotXDeg: 0,
+                        rotYDeg: 0,
+                        rotZDeg: activeVec.rotationDeg,
+                        bevelMm: 0,
+                        sketchId: activeVec.id,
+                      };
+                      setSolidModels((ms) => [...ms, node]);
+                      setActiveSolidId(id);
+                      setIsSketchingIn3d(false);
+                    };
+                    return (
+                      <div style={UI.panel}>
+                        <span style={UI.sectionTitle}>DIMENSIONS · {activeVec.name}</span>
+                        <SliderRow label="X" unit="mm" min={-job.widthMm * 0.6} max={job.widthMm * 0.6} step={0.5} value={activeVec.xMm} onChange={(v) => patchVec({ xMm: v })} />
+                        <SliderRow label="Y" unit="mm" min={-job.depthMm * 0.6} max={job.depthMm * 0.6} step={0.5} value={activeVec.yMm} onChange={(v) => patchVec({ yMm: v })} />
+                        <SliderRow label="Width" unit="mm" min={2} max={job.widthMm} step={0.5} value={activeVec.widthMm} onChange={(v) => patchVec({ widthMm: v })} />
+                        <SliderRow label="Height" unit="mm" min={2} max={job.depthMm} step={0.5} value={activeVec.heightMm} onChange={(v) => patchVec({ heightMm: v })} />
+                        <SliderRow label="Extrude Depth" unit="mm" min={0.5} max={job.thicknessMm * 2} step={0.5} value={activeVec.depthMm} onChange={(v) => patchVec({ depthMm: v })} />
+                        {activeVec.kind === "rect" && (
+                          <SliderRow label="Corner Fillet" unit="mm" min={0} max={40} step={0.5} value={activeVec.cornerRadiusMm} onChange={(v) => patchVec({ cornerRadiusMm: v })} />
+                        )}
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, paddingTop: 4 }}>
+                          <button
+                            type="button"
+                            onClick={() => finishAndExtrude("union")}
+                            style={{ ...UI.btnAccentSmall, background: "#16a34a", padding: "8px 6px" }}
+                          >
+                            Finish &amp; Extrude
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => finishAndExtrude("subtract")}
+                            style={{ ...UI.btnSecondary, borderColor: "#7f1d1d", color: "#fca5a5", padding: "8px 6px" }}
+                          >
+                            Finish &amp; Cut
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </>
+              )}
+
+              {designMode === "model3d" && !isSketchingIn3d && (
                 <>
                   <div style={{ ...UI.pageHeader, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                     <h3 style={UI.pageTitle}>SOLID · 3D Modeler</h3>
@@ -3737,6 +3943,89 @@ export default function App() {
                       <DesignIcon name="stockBlank" size={15} />
                       <span>Stock Blank</span>
                     </button>
+                  </div>
+
+                  {/* FUSION-STYLE SKETCH LAUNCHER */}
+                  <div style={UI.panel}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                      <span style={UI.sectionTitle}>SKETCH</span>
+                      <select
+                        value={sketchPlaneZMm}
+                        onChange={(e) => setSketchPlaneZMm(Number(e.target.value))}
+                        title="Select Sketch Plane Z"
+                        style={{ ...UI.input, width: "auto", padding: "3px 6px", fontSize: 11 }}
+                      >
+                        <option value={0}>Top of Stock (Z=0)</option>
+                        <option value={-job.thicknessMm * 0.5}>Mid Stock (Z={(-job.thicknessMm * 0.5).toFixed(1)})</option>
+                        {(() => {
+                          const act = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
+                          if (!act) return null;
+                          const faceZ = Number((act.zMm + act.heightMm * 0.5).toFixed(2));
+                          return <option value={faceZ}>{act.name} Top (Z={faceZ})</option>;
+                        })()}
+                      </select>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: vectorShapes.length > 0 ? "1.3fr 1fr 1fr" : "1fr", gap: 5 }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSketchTool("rect");
+                          setIsSketchingIn3d(true);
+                        }}
+                        style={{ ...UI.btnAccentSmall, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "7px 8px" }}
+                      >
+                        <DesignIcon name="vector" size={14} />
+                        <span>+ Create Sketch</span>
+                      </button>
+                      {vectorShapes.length > 0 && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const sk = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
+                              setActiveVectorId(sk.id);
+                              setSketchPlaneZMm(sk.sketchZMm ?? 0);
+                              setIsSketchingIn3d(true);
+                            }}
+                            style={{ ...UI.btnSecondary, fontSize: 11 }}
+                          >
+                            Edit Sketch
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const sk = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
+                              const extH = Math.max(1, sk.depthMm || 5);
+                              const sz = sk.sketchZMm ?? 0;
+                              const id = `solid-${Date.now()}`;
+                              const node: SolidModelNode = {
+                                id,
+                                name: `Extrude ${sk.name}`,
+                                kind: "extrude",
+                                visible: true,
+                                boolOp: solidModels.length === 0 ? "union" : "union",
+                                xMm: sk.xMm,
+                                yMm: sk.yMm,
+                                zMm: sz + extH * 0.5,
+                                widthMm: sk.widthMm,
+                                depthMm: sk.heightMm,
+                                heightMm: extH,
+                                rotXDeg: 0,
+                                rotYDeg: 0,
+                                rotZDeg: sk.rotationDeg,
+                                bevelMm: 0,
+                                sketchId: sk.id,
+                              };
+                              setSolidModels((ms) => [...ms, node]);
+                              setActiveSolidId(id);
+                            }}
+                            style={{ ...UI.btnSecondary, fontSize: 11, color: "#4ade80" }}
+                          >
+                            Extrude Sk
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
 
                   {/* CREATE Toolbar (Fusion 360 style) */}
@@ -6325,17 +6614,20 @@ export default function App() {
               }
             />
           )}
-          {step === "layout" && designMode === "vector" && (
+          {step === "layout" && (designMode === "vector" || (designMode === "model3d" && isSketchingIn3d)) && (
             <VectorSketchView
               job={job}
               shapes={vectorShapes}
               activeShapeId={activeVectorId}
               toolMode={sketchTool}
               snapToGrid={snapToGrid}
+              snapStepMm={snapStepMm}
+              sketchPlaneLabel={isSketchingIn3d ? `Sketch Plane Z = ${sketchPlaneZMm.toFixed(1)}mm` : undefined}
               onSelectShape={setActiveVectorId}
               onAddShape={(s) => {
-                setVectorShapes((vs) => [...vs, s]);
-                setActiveVectorId(s.id);
+                const tagged = isSketchingIn3d ? { ...s, sketchZMm: sketchPlaneZMm } : s;
+                setVectorShapes((vs) => [...vs, tagged]);
+                setActiveVectorId(tagged.id);
               }}
               onUpdateShape={(id, patch) =>
                 setVectorShapes((vs) => vs.map((x) => (x.id === id ? { ...x, ...patch } : x)))
@@ -6363,7 +6655,7 @@ export default function App() {
               if (sceneObjectsRef.current?.brushRing) sceneObjectsRef.current.brushRing.visible = false;
             }}
             style={{
-              display: step === "layout" && designMode !== "model3d" ? "none" : "block",
+              display: step === "layout" && (designMode !== "model3d" || isSketchingIn3d) ? "none" : "block",
               position: "relative",
               width: "100%",
               height: "100%",
@@ -6373,7 +6665,7 @@ export default function App() {
           />
 
           {/* Floating Top-Right 3D Camera Preset Bar */}
-          {(step !== "layout" || designMode === "model3d") && (
+          {(step !== "layout" || (designMode === "model3d" && !isSketchingIn3d)) && (
             <div
               style={{
                 position: "absolute",
@@ -6413,7 +6705,7 @@ export default function App() {
           )}
 
           {/* Floating Bottom Display & Material Sphere Dock */}
-          {(step !== "layout" || designMode === "model3d") && (
+          {(step !== "layout" || (designMode === "model3d" && !isSketchingIn3d)) && (
             <div
               style={{
                 position: "absolute",
@@ -6495,7 +6787,7 @@ export default function App() {
           )}
 
           {/* Lower-Right 3D Mesh Export Pill (.STL / .3MF) */}
-          {(step !== "layout" || designMode === "model3d") && (
+          {(step !== "layout" || (designMode === "model3d" && !isSketchingIn3d)) && (
             <div
               style={{
                 position: "absolute",

@@ -17,6 +17,7 @@ export interface VectorShape {
   text?: string;
   depthMm: number;
   role: VectorRole;
+  sketchZMm?: number;
 }
 
 /**

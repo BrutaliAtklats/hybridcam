@@ -1,0 +1,17 @@
+# Dependencies & Build Outputs
+node_modules/
+app/node_modules/
+app/dist/
+target/
+app/src-tauri/target/
+app/src-tauri/gen/
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
+
+# Local binaries (upload via GitHub Releases if >100MB)
+bin/*.exe

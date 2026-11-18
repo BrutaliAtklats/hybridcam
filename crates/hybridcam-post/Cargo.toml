@@ -1,0 +1,13 @@
+[package]
+name = "hybridcam-post"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hybridcam-geom = { path = "../hybridcam-geom" }
+hybridcam-cam = { path = "../hybridcam-cam" }
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true

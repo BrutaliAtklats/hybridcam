@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "HybridCAM",
+  "version": "0.1.0",
+  "identifier": "com.hybridcam.studio",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "HybridCAM — Precision & Relief CAM",
+        "width": 1440,
+        "height": 900
+      }
+    ]
+  }
+}

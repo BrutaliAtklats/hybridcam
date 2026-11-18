@@ -1,0 +1,12 @@
+[package]
+name = "hybridcam-relief"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hybridcam-geom = { path = "../hybridcam-geom" }
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+rayon.workspace = true
+image.workspace = true

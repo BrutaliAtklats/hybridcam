@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hybridcam-geom",
+    "crates/hybridcam-relief",
+    "crates/hybridcam-cam",
+    "crates/hybridcam-sim",
+    "crates/hybridcam-post",
+    "crates/hybridcam-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+rayon = "1.10"
+kurbo = "0.11"
+i_overlay = "1.9"
+image = "0.25"
+stl_io = "0.8"
+tobj = "4.0"
+dxf = "0.6"
+usvg = "0.44"
+clap = { version = "4.5", features = ["derive"] }

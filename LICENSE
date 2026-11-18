@@ -1,0 +1,31 @@
+HybridCAM Personal & Commercial Dual License
+Copyright (c) 2026 Edgars Amolins. All rights reserved.
+
+1. FREE PERSONAL, HOBBYIST & EDUCATIONAL LICENSE
+Permission is hereby granted, free of charge, to any individual or non-profit
+educational institution to use, copy, and run the HybridCAM software and its
+documentation solely for:
+  (a) Personal, non-commercial hobbyist CNC/CAD projects; or
+  (b) Academic teaching and non-commercial student research.
+
+2. PAID COMMERCIAL USE
+Any use of HybridCAM in connection with a business, sole proprietorship,
+freelance service, commercial fabrication shop, or revenue-generating
+production (including selling parts or files produced with HybridCAM, or
+internal use by a for-profit organization) requires a paid Commercial License.
+
+To purchase a Commercial License, contact: eamolins@gmail.com
+
+3. RESTRICTIONS
+Without a separate written agreement from the copyright holder, you may not:
+  (a) Redistribute, sell, sublicense, or host HybridCAM as a standalone
+      commercial product or SaaS offering; or
+  (b) Remove or alter copyright notices or this LICENSE file.
+
+4. DISCLAIMER OF WARRANTY
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+LIABILITY ARISING FROM THE USE OF THIS SOFTWARE OR CNC MACHINERY. ALWAYS
+VERIFY GENERATED G-CODE BEFORE RUNNING ON PHYSICAL EQUIPMENT.

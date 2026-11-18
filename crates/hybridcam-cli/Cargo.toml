@@ -1,0 +1,13 @@
+[package]
+name = "hybridcam-cli"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hybridcam-geom = { path = "../hybridcam-geom" }
+hybridcam-relief = { path = "../hybridcam-relief" }
+hybridcam-cam = { path = "../hybridcam-cam" }
+hybridcam-sim = { path = "../hybridcam-sim" }
+hybridcam-post = { path = "../hybridcam-post" }
+clap.workspace = true
+serde_json.workspace = true

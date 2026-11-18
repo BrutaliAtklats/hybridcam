@@ -3125,56 +3125,6 @@ export default function App() {
         >
           {step === "layout" && (
             <>
-              {/* 3-Mode Design Switcher: Picture | Vector Sketch | 3D Model */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4, background: "var(--hc-subpanel-bg, #0d1015)", padding: 4, borderRadius: 8, border: "1px solid var(--hc-border, #262c36)" }}>
-                {(
-                  [
-                    ["picture", "Picture", "picture"],
-                    ["vector", "Vectors", "vector"],
-                    ["model3d", "3D Model", "model3d"],
-                  ] as [DesignMode, string, DesignIconName][]
-                ).map(([m, lbl, ic]) => (
-                  <button
-                    key={m}
-                    onClick={() => setDesignMode(m)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: 5,
-                      padding: "7px 4px",
-                      borderRadius: 6,
-                      border: "none",
-                      fontSize: 12,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      background: designMode === m ? "var(--hc-accent, #2563eb)" : "transparent",
-                      color: designMode === m ? "#fff" : "var(--hc-muted, #9ca3af)",
-                    }}
-                  >
-                    <DesignIcon name={ic} size={15} />
-                    <span>{lbl}</span>
-                  </button>
-                ))}
-              </div>
-
-              {/* Merge Stack Toggles (lets you switch off Picture/Relief mode or combine all 3) */}
-              <div style={{ ...UI.subPanel, display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12 }}>
-                <span style={{ color: "var(--hc-section-title, #93c5fd)", fontWeight: 600 }}>Include:</span>
-                <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
-                  <input type="checkbox" checked={enablePictureMode} onChange={(e) => setEnablePictureMode(e.target.checked)} />
-                  Picture
-                </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
-                  <input type="checkbox" checked={enableVectorMode} onChange={(e) => setEnableVectorMode(e.target.checked)} />
-                  Vectors
-                </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
-                  <input type="checkbox" checked={enable3dModelMode} onChange={(e) => setEnable3dModelMode(e.target.checked)} />
-                  3D Solid
-                </label>
-              </div>
-
               {designMode === "picture" && (
               <>
               <div style={UI.pageHeader}>
@@ -6634,6 +6584,346 @@ export default function App() {
               }
             />
           )}
+          {step === "layout" && (() => {
+            const activeSolid = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
+            const addSolidQuick = (kind: SolidPrimitiveKind, lbl: string, defaultOp: BooleanOp) => {
+              const id = `solid-${Date.now()}`;
+              const isHole = kind === "hole";
+              const node: SolidModelNode = {
+                id,
+                name: `${lbl} ${solidModels.length + 1}`,
+                kind,
+                visible: true,
+                boolOp: solidModels.length === 0 ? "union" : defaultOp,
+                xMm: 0,
+                yMm: 0,
+                zMm: isHole ? -job.thicknessMm * 0.5 : 0,
+                widthMm: isHole ? 12 : 50,
+                depthMm: isHole ? 12 : 50,
+                heightMm: isHole ? job.thicknessMm + 2 : 10,
+                rotXDeg: 0,
+                rotYDeg: 0,
+                rotZDeg: 0,
+                bevelMm: 0,
+                sketchId: vectorShapes[0]?.id,
+              };
+              setSolidModels((ms) => [...ms, node]);
+              setActiveSolidId(id);
+            };
+            const ribbonBtn = (active: boolean, danger?: boolean): React.CSSProperties => ({
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "4px 8px",
+              borderRadius: 6,
+              border: `1px solid ${active ? "var(--hc-accent, #3b82f6)" : "transparent"}`,
+              background: active ? "var(--hc-accent, #2563eb)" : "rgba(30, 41, 59, 0.55)",
+              color: active ? "#fff" : danger ? "#fca5a5" : "#cbd5e1",
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+            });
+            const groupBox: React.CSSProperties = {
+              display: "flex",
+              flexDirection: "column",
+              gap: 3,
+              paddingRight: 8,
+              borderRight: "1px solid rgba(71, 85, 105, 0.55)",
+            };
+            const groupLbl: React.CSSProperties = {
+              fontSize: 9,
+              fontWeight: 700,
+              letterSpacing: "0.08em",
+              color: "#64748b",
+              textTransform: "uppercase",
+              paddingLeft: 2,
+            };
+            return (
+              <div
+                style={{
+                  position: "absolute",
+                  top: 12,
+                  left: 14,
+                  zIndex: 25,
+                  maxWidth: "calc(100% - 250px)",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  padding: "7px 10px",
+                  borderRadius: 11,
+                  background: "rgba(15, 20, 28, 0.92)",
+                  backdropFilter: "blur(10px)",
+                  border: "1px solid var(--hc-border-strong, #334155)",
+                  boxShadow: "0 10px 28px rgba(0,0,0,0.45)",
+                }}
+              >
+                {/* Top Row: Photo | Sketch | 3D Model + Include Toggles */}
+                <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                  <div style={{ display: "flex", gap: 3, background: "#0b0e14", padding: 3, borderRadius: 8, border: "1px solid #1e293b" }}>
+                    {(
+                      [
+                        ["picture", "Photo", "picture"],
+                        ["vector", "Sketch", "vector"],
+                        ["model3d", "3D Model", "model3d"],
+                      ] as [DesignMode, string, DesignIconName][]
+                    ).map(([m, lbl, ic]) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => {
+                          setDesignMode(m);
+                          if (m !== "model3d") setIsSketchingIn3d(false);
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 5,
+                          padding: "5px 11px",
+                          borderRadius: 6,
+                          border: "none",
+                          fontSize: 12,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                          background: designMode === m ? "var(--hc-accent, #2563eb)" : "transparent",
+                          color: designMode === m ? "#fff" : "#94a3b8",
+                        }}
+                      >
+                        <DesignIcon name={ic} size={14} />
+                        <span>{lbl}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div style={{ width: 1, height: 20, background: "rgba(71, 85, 105, 0.55)" }} />
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: "#94a3b8" }}>
+                    <span style={{ fontWeight: 700, color: "#64748b", fontSize: 10, letterSpacing: "0.06em" }}>INCLUDE</span>
+                    <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", color: enablePictureMode ? "#e2e8f0" : "#64748b" }}>
+                      <input type="checkbox" checked={enablePictureMode} onChange={(e) => setEnablePictureMode(e.target.checked)} />
+                      Photo
+                    </label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", color: enableVectorMode ? "#e2e8f0" : "#64748b" }}>
+                      <input type="checkbox" checked={enableVectorMode} onChange={(e) => setEnableVectorMode(e.target.checked)} />
+                      Sketch
+                    </label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", color: enable3dModelMode ? "#e2e8f0" : "#64748b" }}>
+                      <input type="checkbox" checked={enable3dModelMode} onChange={(e) => setEnable3dModelMode(e.target.checked)} />
+                      3D
+                    </label>
+                  </div>
+                </div>
+
+                {/* Bottom Row: Fusion-Style Grouped Quick Tools */}
+                <div style={{ display: "flex", alignItems: "stretch", flexWrap: "wrap", gap: 8, paddingTop: 4, borderTop: "1px solid rgba(51, 65, 85, 0.5)" }}>
+                  {designMode === "picture" && (
+                    <>
+                      <div style={groupBox}>
+                        <span style={groupLbl}>Tools</span>
+                        <div style={{ display: "flex", gap: 4 }}>
+                          {(
+                            [
+                              ["move", "Move", "move"],
+                              ["paintRaise", "Raise +", "paintRaise"],
+                              ["paintLower", "Lower -", "paintLower"],
+                              ["paintSmooth", "Smooth", "paintSmooth"],
+                            ] as [LayoutToolMode, string, DesignIconName][]
+                          ).map(([m, lbl, ic]) => (
+                            <button key={m} type="button" onClick={() => setToolMode(m)} style={ribbonBtn(toolMode === m)}>
+                              <DesignIcon name={ic} size={13} />
+                              <span>{lbl}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div style={{ ...groupBox, borderRight: "none", paddingRight: 0 }}>
+                        <span style={groupLbl}>Align</span>
+                        <div style={{ display: "flex", gap: 4 }}>
+                          <button type="button" onClick={() => { pushUndoSnapshot(); updateActivePlacement((p) => ({ ...p, offsetXMm: 0 })); }} style={ribbonBtn(false)}>
+                            <DesignIcon name="centerX" size={13} />
+                            <span>Center X</span>
+                          </button>
+                          <button type="button" onClick={() => { pushUndoSnapshot(); updateActivePlacement((p) => ({ ...p, offsetYMm: 0 })); }} style={ribbonBtn(false)}>
+                            <DesignIcon name="centerY" size={13} />
+                            <span>Center Y</span>
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {(designMode === "vector" || (designMode === "model3d" && isSketchingIn3d)) && (
+                    <>
+                      <div style={groupBox}>
+                        <span style={groupLbl}>Create Sketch</span>
+                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                          {(
+                            [
+                              ["select", "Select", "select"],
+                              ["rect", "Rect", "rect"],
+                              ["circle", "Circle", "circle"],
+                              ["slot", "Slot", "rect"],
+                              ["polygon", "Polygon", "polygon"],
+                              ["polyline", "Polyline", "polyline"],
+                            ] as [SketchToolMode, string, DesignIconName][]
+                          ).map(([k, lbl, ic]) => (
+                            <button key={k} type="button" onClick={() => setSketchTool(k)} style={ribbonBtn(sketchTool === k)}>
+                              <DesignIcon name={ic} size={13} />
+                              <span>{lbl}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div style={{ ...groupBox, borderRight: "none", paddingRight: 0 }}>
+                        <span style={groupLbl}>Constraints</span>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#cbd5e1", cursor: "pointer", padding: "4px 6px", borderRadius: 6, background: "rgba(30, 41, 59, 0.55)" }}>
+                            <input type="checkbox" checked={snapToGrid} onChange={(e) => setSnapToGrid(e.target.checked)} />
+                            Snap {snapStepMm}mm
+                          </label>
+                          {isSketchingIn3d && (
+                            <button
+                              type="button"
+                              onClick={() => setIsSketchingIn3d(false)}
+                              style={{ ...ribbonBtn(true), background: "#16a34a", borderColor: "#22c55e" }}
+                            >
+                              ✓ Finish Sketch
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {designMode === "model3d" && !isSketchingIn3d && (
+                    <>
+                      <div style={groupBox}>
+                        <span style={groupLbl}>Sketch</span>
+                        <div style={{ display: "flex", gap: 4 }}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSketchTool("rect");
+                              setIsSketchingIn3d(true);
+                            }}
+                            style={ribbonBtn(true)}
+                          >
+                            <DesignIcon name="vector" size={13} />
+                            <span>+ Create Sketch</span>
+                          </button>
+                          {vectorShapes.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const sk = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
+                                setActiveVectorId(sk.id);
+                                setSketchPlaneZMm(sk.sketchZMm ?? 0);
+                                setIsSketchingIn3d(true);
+                              }}
+                              style={ribbonBtn(false)}
+                            >
+                              Edit Sketch
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div style={groupBox}>
+                        <span style={groupLbl}>Create</span>
+                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                          {(
+                            [
+                              ["extrude", "Extrude", "union", "extrude"],
+                              ["revolve", "Revolve", "union", "revolve"],
+                              ["hole", "Hole", "subtract", "hole"],
+                              ["box", "Box", "union", "box"],
+                              ["cylinder", "Cylinder", "union", "cylinder"],
+                              ["pipe", "Pipe", "union", "pipe"],
+                              ["sphere", "Sphere", "union", "sphere"],
+                            ] as [SolidPrimitiveKind, string, BooleanOp, DesignIconName][]
+                          ).map(([kind, lbl, defaultOp, ic]) => (
+                            <button
+                              key={kind}
+                              type="button"
+                              onClick={() => addSolidQuick(kind, lbl, defaultOp)}
+                              style={ribbonBtn(false, defaultOp === "subtract")}
+                            >
+                              <DesignIcon name={ic} size={13} />
+                              <span>{lbl}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div style={{ ...groupBox, borderRight: "none", paddingRight: 0 }}>
+                        <span style={groupLbl}>Modify</span>
+                        <div style={{ display: "flex", gap: 4 }}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const id = `solid-${Date.now()}`;
+                              setSolidModels((ms) => [
+                                {
+                                  id,
+                                  name: "Stock Blank",
+                                  kind: "box",
+                                  visible: true,
+                                  boolOp: "union",
+                                  xMm: 0,
+                                  yMm: 0,
+                                  zMm: -job.thicknessMm * 0.5,
+                                  widthMm: job.widthMm,
+                                  depthMm: job.depthMm,
+                                  heightMm: job.thicknessMm,
+                                  rotXDeg: 0,
+                                  rotYDeg: 0,
+                                  rotZDeg: 0,
+                                  bevelMm: 0,
+                                },
+                                ...ms,
+                              ]);
+                              setActiveSolidId(id);
+                            }}
+                            style={ribbonBtn(false)}
+                          >
+                            <DesignIcon name="stockBlank" size={13} />
+                            <span>Stock Blank</span>
+                          </button>
+                          {activeSolid && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setSolidModels((ms) =>
+                                    ms.map((x) => (x.id === activeSolid.id ? { ...x, heightMm: Number((x.heightMm + 2).toFixed(1)) } : x))
+                                  )
+                                }
+                                style={ribbonBtn(false)}
+                              >
+                                <DesignIcon name="pull" size={13} />
+                                <span>Pull +2</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const id = `solid-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                                  setSolidModels((ms) => [...ms, { ...activeSolid, id, name: `${activeSolid.name} Mirror`, xMm: -activeSolid.xMm }]);
+                                  setActiveSolidId(id);
+                                }}
+                                style={ribbonBtn(false)}
+                              >
+                                <DesignIcon name="mirrorX" size={13} />
+                                <span>Mirror X</span>
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
           <main
             ref={mountRef}
             onPointerDown={(e) => {

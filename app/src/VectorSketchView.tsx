@@ -408,7 +408,7 @@ export const VectorSketchView: React.FC<Props> = ({
       <div
         style={{
           position: "absolute",
-          top: 12,
+          bottom: 14,
           left: 14,
           padding: "6px 10px",
           borderRadius: 8,

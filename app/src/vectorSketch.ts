@@ -48,7 +48,7 @@ export function shapeToPolylineMm(shape: VectorShape): [number, number][] {
       }
     }
   } else if (shape.kind === "circle") {
-    const segs = 40;
+    const segs = 72;
     for (let i = 0; i < segs; i++) {
       const a = (i / segs) * Math.PI * 2;
       raw.push([hw * Math.cos(a), hd * Math.sin(a)]);

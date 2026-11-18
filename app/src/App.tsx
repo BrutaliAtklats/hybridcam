@@ -513,6 +513,9 @@ export default function App() {
   const [sketchTool, setSketchTool] = useState<SketchToolMode>("select");
   const [isSketchingIn3d, setIsSketchingIn3d] = useState<boolean>(false);
   const [sketchPlaneZMm, setSketchPlaneZMm] = useState<number>(0);
+  const [snap3dToFloor, setSnap3dToFloor] = useState<boolean>(true);
+  const snap3dToFloorRef = useRef<boolean>(true);
+  snap3dToFloorRef.current = snap3dToFloor;
   const [solidModels, setSolidModels] = useState<SolidModelNode[]>(() =>
     loadJson<SolidModelNode[]>("hybridcam.solidModels", [])
   );
@@ -756,7 +759,7 @@ export default function App() {
               boolOp: "union",
               xMm: sk ? sk.xMm : 0,
               yMm: sk ? sk.yMm : 0,
-              zMm: sk ? (sk.sketchZMm ?? 0) + extH * 0.5 : 0,
+              zMm: snap3dToFloor ? -job.thicknessMm + extH * 0.5 : (sk ? (sk.sketchZMm ?? 0) + extH * 0.5 : 0),
               widthMm: sk ? sk.widthMm : 50,
               depthMm: sk ? sk.heightMm : 50,
               heightMm: extH,
@@ -2034,7 +2037,16 @@ export default function App() {
           const ny = Math.round(gizmoTarget.position.y * 2) / 2;
           const nz = Math.round((gizmoTarget.position.z - topZ) * 2) / 2;
           setSolidModels((ms) =>
-            ms.map((m) => (m.id === id ? { ...m, xMm: nx, yMm: ny, zMm: nz } : m))
+            ms.map((m) =>
+              m.id === id
+                ? {
+                    ...m,
+                    xMm: nx,
+                    yMm: ny,
+                    zMm: snap3dToFloorRef.current ? -job.thicknessMm + m.heightMm * 0.5 : nz,
+                  }
+                : m
+            )
           );
         }
       }
@@ -2151,7 +2163,7 @@ export default function App() {
           wireMesh.position.set(0, 0, topZ);
           dynamicGroup.add(wireMesh);
 
-          const edgeGeo = new THREE.EdgesGeometry(solidCsgGeo, 18);
+          const edgeGeo = new THREE.EdgesGeometry(solidCsgGeo, 45);
           const edgeMat = new THREE.LineBasicMaterial({ color: activeTheme.accentSecondary });
           const edgeLines = new THREE.LineSegments(edgeGeo, edgeMat);
           edgeLines.position.set(0, 0, topZ);
@@ -2186,31 +2198,11 @@ export default function App() {
         ghostMesh.position.set(0, 0, topZ);
         dynamicGroup.add(ghostMesh);
 
-        const edgeGeo = new THREE.EdgesGeometry(ghostGeo, 20);
-        const edgeMat = new THREE.LineBasicMaterial({ color: ghostColor, transparent: true, opacity: 0.9 });
+        const edgeGeo = new THREE.EdgesGeometry(ghostGeo, 45);
+        const edgeMat = new THREE.LineBasicMaterial({ color: ghostColor, transparent: true, opacity: 0.75 });
         const edgeLines = new THREE.LineSegments(edgeGeo, edgeMat);
         edgeLines.position.set(0, 0, topZ);
         dynamicGroup.add(edgeLines);
-      }
-      // Render 2D sketches as crisp 3D blue sketch profiles on their sketch plane
-      for (const vs of vectorShapes) {
-        if (!vs.visible) continue;
-        const pts2d = shapeToPolylineMm(vs);
-        if (pts2d.length < 2) continue;
-        const zPlane = topZ + (vs.sketchZMm ?? 0) + 0.15;
-        const pts3d = pts2d.map(([x, y]) => new THREE.Vector3(x, y, zPlane));
-        const skGeo = new THREE.BufferGeometry().setFromPoints(pts3d);
-        const isSel = vs.id === activeVectorId;
-        const skMat = new THREE.LineBasicMaterial({
-          color: isSel ? 0x38bdf8 : 0x60a5fa,
-          transparent: true,
-          opacity: isSel ? 1.0 : 0.72,
-        });
-        const skObj =
-          vs.kind === "polyline"
-            ? new THREE.Line(skGeo, skMat)
-            : new THREE.LineLoop(skGeo, skMat);
-        dynamicGroup.add(skObj);
       }
       needsRenderRef.current = true;
       return;
@@ -3920,7 +3912,7 @@ export default function App() {
                             boolOp: solidModels.length === 0 ? "union" : "union",
                             xMm: sk.xMm,
                             yMm: sk.yMm,
-                            zMm: sz + extH * 0.5,
+                            zMm: snap3dToFloor ? -job.thicknessMm + extH * 0.5 : sz + extH * 0.5,
                             widthMm: sk.widthMm,
                             depthMm: sk.heightMm,
                             heightMm: extH,
@@ -3958,6 +3950,7 @@ export default function App() {
                           onClick={() => {
                             const id = `solid-${Date.now()}`;
                             const isHole = kind === "hole";
+                            const hVal = isHole ? job.thicknessMm + 2 : 10;
                             const node: SolidModelNode = {
                               id,
                               name: `${lbl.replace(" (Cut)", "")} ${solidModels.length + 1}`,
@@ -3966,10 +3959,10 @@ export default function App() {
                               boolOp: solidModels.length === 0 ? "union" : defaultOp,
                               xMm: 0,
                               yMm: 0,
-                              zMm: isHole ? -job.thicknessMm * 0.5 : 0,
+                              zMm: isHole ? -job.thicknessMm * 0.5 : (snap3dToFloor ? -job.thicknessMm + hVal * 0.5 : 0),
                               widthMm: isHole ? 12 : 50,
                               depthMm: isHole ? 12 : 50,
-                              heightMm: isHole ? job.thicknessMm + 2 : 10,
+                              heightMm: hVal,
                               rotXDeg: 0,
                               rotYDeg: 0,
                               rotZDeg: 0,
@@ -6534,6 +6527,7 @@ export default function App() {
               const isHole = kind === "hole";
               const sk = kind === "extrude" ? (vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0]) : undefined;
               const extH = sk ? Math.max(1, sk.depthMm || 5) : 10;
+              const hVal = sk ? extH : (isHole ? job.thicknessMm + 2 : 10);
               const node: SolidModelNode = {
                 id,
                 name: sk ? `Extrude ${sk.name}` : `${lbl} ${solidModels.length + 1}`,
@@ -6542,10 +6536,16 @@ export default function App() {
                 boolOp: solidModels.length === 0 ? "union" : defaultOp,
                 xMm: sk ? sk.xMm : 0,
                 yMm: sk ? sk.yMm : 0,
-                zMm: sk ? (sk.sketchZMm ?? 0) + extH * 0.5 : (isHole ? -job.thicknessMm * 0.5 : 0),
+                zMm: isHole
+                  ? -job.thicknessMm * 0.5
+                  : snap3dToFloor
+                  ? -job.thicknessMm + hVal * 0.5
+                  : sk
+                  ? (sk.sketchZMm ?? 0) + hVal * 0.5
+                  : 0,
                 widthMm: sk ? sk.widthMm : (isHole ? 12 : 50),
                 depthMm: sk ? sk.heightMm : (isHole ? 12 : 50),
-                heightMm: sk ? extH : (isHole ? job.thicknessMm + 2 : 10),
+                heightMm: hVal,
                 rotXDeg: 0,
                 rotYDeg: 0,
                 rotZDeg: sk ? sk.rotationDeg : 0,
@@ -6866,13 +6866,51 @@ export default function App() {
                             <DesignIcon name="stockBlank" size={13} />
                             <span>Stock Blank</span>
                           </button>
+                          <label title="Snap all 3D objects to the stock floor" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#cbd5e1", cursor: "pointer", padding: "4px 6px", borderRadius: 6, background: "rgba(30, 41, 59, 0.55)" }}>
+                            <input
+                              type="checkbox"
+                              checked={snap3dToFloor}
+                              onChange={(e) => {
+                                const on = e.target.checked;
+                                setSnap3dToFloor(on);
+                                if (on) {
+                                  setSolidModels((ms) =>
+                                    ms.map((x) => (x.boolOp === "subtract" ? x : { ...x, zMm: Number((-job.thicknessMm + x.heightMm * 0.5).toFixed(2)) }))
+                                  );
+                                }
+                              }}
+                            />
+                            Floor Snap
+                          </label>
                           {activeSolid && (
                             <>
                               <button
                                 type="button"
+                                title="Snap active object to floor"
                                 onClick={() =>
                                   setSolidModels((ms) =>
-                                    ms.map((x) => (x.id === activeSolid.id ? { ...x, heightMm: Number((x.heightMm + 2).toFixed(1)) } : x))
+                                    ms.map((x) =>
+                                      x.id === activeSolid.id ? { ...x, zMm: Number((-job.thicknessMm + x.heightMm * 0.5).toFixed(2)) } : x
+                                    )
+                                  )
+                                }
+                                style={ribbonBtn(false)}
+                              >
+                                <span>Snap Floor</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setSolidModels((ms) =>
+                                    ms.map((x) => {
+                                      if (x.id !== activeSolid.id) return x;
+                                      const nextH = Number((x.heightMm + 2).toFixed(1));
+                                      return {
+                                        ...x,
+                                        heightMm: nextH,
+                                        zMm: snap3dToFloor ? Number((-job.thicknessMm + nextH * 0.5).toFixed(2)) : x.zMm,
+                                      };
+                                    })
                                   )
                                 }
                                 style={ribbonBtn(false)}

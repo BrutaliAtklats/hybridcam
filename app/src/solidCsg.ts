@@ -338,7 +338,7 @@ export function buildPrimitiveGeometry(node: SolidModelNode, sketches: VectorSha
       geo = new THREE.BoxGeometry(w, d, h);
     }
   } else if (node.kind === "cylinder" || node.kind === "hole") {
-    geo = new THREE.CylinderGeometry(w * 0.5, w * 0.5, h, 24);
+    geo = new THREE.CylinderGeometry(w * 0.5, w * 0.5, h, 64);
     geo.rotateX(Math.PI / 2);
     if (Math.abs(d - w) > 0.1) geo.scale(1, d / w, 1);
   } else if (node.kind === "pipe") {
@@ -355,22 +355,22 @@ export function buildPrimitiveGeometry(node: SolidModelNode, sketches: VectorSha
       bevelEnabled: bev > 0.05,
       bevelThickness: Math.min(bev, wall * 0.35),
       bevelSize: Math.min(bev, wall * 0.35),
-      bevelSegments: 2,
-      curveSegments: 24,
+      bevelSegments: 3,
+      curveSegments: 64,
     });
     geo.center();
     if (Math.abs(d - w) > 0.1) geo.scale(1, d / w, 1);
   } else if (node.kind === "sphere") {
-    geo = new THREE.SphereGeometry(0.5, 20, 14);
+    geo = new THREE.SphereGeometry(0.5, 48, 32);
     geo.scale(w, d, h);
   } else if (node.kind === "cone") {
-    geo = new THREE.ConeGeometry(w * 0.5, h, 24);
+    geo = new THREE.ConeGeometry(w * 0.5, h, 64);
     geo.rotateX(Math.PI / 2);
     if (Math.abs(d - w) > 0.1) geo.scale(1, d / w, 1);
   } else if (node.kind === "torus") {
     const tube = Math.max(0.5, Math.min(w, h) * 0.22);
     const maj = Math.max(tube + 0.5, w * 0.5 - tube);
-    geo = new THREE.TorusGeometry(maj, tube, 14, 28);
+    geo = new THREE.TorusGeometry(maj, tube, 28, 64);
     if (Math.abs(d - w) > 0.1) geo.scale(1, d / w, 1);
   } else if (node.kind === "wedge") {
     const shape = new THREE.Shape();
@@ -410,13 +410,13 @@ export function buildPrimitiveGeometry(node: SolidModelNode, sketches: VectorSha
     // Revolve (dome/vase profile)
     const lathePts: THREE.Vector2[] = [];
     const rMax = w * 0.5;
-    for (let i = 0; i <= 12; i++) {
-      const t = i / 12;
+    for (let i = 0; i <= 24; i++) {
+      const t = i / 24;
       const rx = Math.sin(t * Math.PI) * rMax;
       const zy = (t - 0.5) * h;
       lathePts.push(new THREE.Vector2(Math.max(0.01, rx), zy));
     }
-    geo = new THREE.LatheGeometry(lathePts, 24);
+    geo = new THREE.LatheGeometry(lathePts, 64);
     geo.rotateX(Math.PI / 2);
   }
 

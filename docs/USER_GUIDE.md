@@ -237,8 +237,8 @@ Settings is organized into 4 sub-tabs:
 | Shortcut | Action |
 | :--- | :--- |
 | `1` | Switch to **Photo** mode |
-| `2` | Switch to **Sketch** mode |
-| `3` | Switch to **3D Model** mode |
+| `2` | Switch to unified **Design (CAD)** 3D workspace |
+| `3` or `K` | **+ Create Sketch** inside Design (CAD) |
 | `Delete` / `Backspace` | Delete selected shape, 3D solid, or photo layer |
 
 #### Sketch Mode (2D CAD & 3D Create Sketch)

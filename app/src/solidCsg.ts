@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { evalParamExpr } from "./parametricCad";
 import { shapeToPolylineMm, VectorShape } from "./vectorSketch";
 
 export type SolidPrimitiveKind =
@@ -11,7 +12,10 @@ export type SolidPrimitiveKind =
   | "hole"
   | "pipe"
   | "extrude"
-  | "revolve";
+  | "revolve"
+  | "loft"
+  | "sweep"
+  | "shell";
 
 export type BooleanOp = "union" | "subtract" | "intersect";
 
@@ -20,6 +24,7 @@ export interface SolidModelNode {
   name: string;
   kind: SolidPrimitiveKind;
   visible: boolean;
+  suppressed?: boolean;
   boolOp: BooleanOp;
   xMm: number;
   yMm: number;
@@ -32,6 +37,35 @@ export interface SolidModelNode {
   rotZDeg: number;
   bevelMm: number;
   sketchId?: string;
+  sketchId2?: string;
+  taperDeg?: number;
+  revolveDeg?: number;
+  wallThicknessMm?: number;
+  /** Optional parametric expressions keyed by field name (e.g. heightMm: "stock_t - wall") */
+  paramExprs?: Record<string, string>;
+}
+
+/**
+ * Evaluate any parametric expressions bound to a SolidModelNode against the live parameter environment.
+ */
+export function resolveSolidNode(node: SolidModelNode, env: Record<string, number>): SolidModelNode {
+  const exprs = node.paramExprs;
+  if (!exprs || Object.keys(exprs).length === 0) return node;
+  const next = { ...node };
+  if (exprs.xMm) next.xMm = evalParamExpr(exprs.xMm, env, node.xMm);
+  if (exprs.yMm) next.yMm = evalParamExpr(exprs.yMm, env, node.yMm);
+  if (exprs.zMm) next.zMm = evalParamExpr(exprs.zMm, env, node.zMm);
+  if (exprs.widthMm) next.widthMm = Math.max(0.5, evalParamExpr(exprs.widthMm, env, node.widthMm));
+  if (exprs.depthMm) next.depthMm = Math.max(0.5, evalParamExpr(exprs.depthMm, env, node.depthMm));
+  if (exprs.heightMm) next.heightMm = Math.max(0.5, evalParamExpr(exprs.heightMm, env, node.heightMm));
+  if (exprs.rotXDeg) next.rotXDeg = evalParamExpr(exprs.rotXDeg, env, node.rotXDeg);
+  if (exprs.rotYDeg) next.rotYDeg = evalParamExpr(exprs.rotYDeg, env, node.rotYDeg);
+  if (exprs.rotZDeg) next.rotZDeg = evalParamExpr(exprs.rotZDeg, env, node.rotZDeg);
+  if (exprs.bevelMm) next.bevelMm = Math.max(0, evalParamExpr(exprs.bevelMm, env, node.bevelMm));
+  if (exprs.wallThicknessMm) next.wallThicknessMm = Math.max(0.5, evalParamExpr(exprs.wallThicknessMm, env, node.wallThicknessMm ?? 3));
+  if (exprs.taperDeg) next.taperDeg = Math.max(-45, Math.min(45, evalParamExpr(exprs.taperDeg, env, node.taperDeg ?? 0)));
+  if (exprs.revolveDeg) next.revolveDeg = Math.max(15, Math.min(360, evalParamExpr(exprs.revolveDeg, env, node.revolveDeg ?? 360)));
+  return next;
 }
 
 // ---------- Pure-TypeScript 3D BSP CSG Engine ----------
@@ -403,11 +437,122 @@ export function buildPrimitiveGeometry(node: SolidModelNode, sketches: VectorSha
       bevelEnabled: bev > 0.05,
       bevelThickness: bev,
       bevelSize: bev,
-      bevelSegments: 2,
+      bevelSegments: 3,
+      steps: Math.abs(node.taperDeg || 0) > 0.1 ? 4 : 1,
     });
     geo.translate(0, 0, -h * 0.5);
+    const taper = node.taperDeg || 0;
+    if (Math.abs(taper) > 0.1) {
+      const tanA = Math.tan((taper * Math.PI) / 180);
+      const posAttr = geo.attributes.position;
+      const maxR = Math.max(1, Math.max(w, d) * 0.5);
+      for (let i = 0; i < posAttr.count; i++) {
+        const z = posAttr.getZ(i);
+        const t = (z + h * 0.5) / Math.max(0.01, h);
+        const scale = Math.max(0.08, 1 - (t * h * tanA) / maxR);
+        posAttr.setX(i, posAttr.getX(i) * scale);
+        posAttr.setY(i, posAttr.getY(i) * scale);
+      }
+      posAttr.needsUpdate = true;
+      geo.computeVertexNormals();
+    }
+  } else if (node.kind === "loft") {
+    // Smooth multi-section loft between bottom profile and top profile
+    const resampleRing = (pts2d: [number, number][], n: number): [number, number][] => {
+      if (pts2d.length < 3) {
+        const out: [number, number][] = [];
+        for (let i = 0; i < n; i++) {
+          const a = (i / n) * Math.PI * 2;
+          out.push([Math.cos(a) * w * 0.5, Math.sin(a) * d * 0.5]);
+        }
+        return out;
+      }
+      const out: [number, number][] = [];
+      for (let i = 0; i < n; i++) {
+        const f = (i / n) * pts2d.length;
+        const i0 = Math.floor(f) % pts2d.length;
+        const i1 = (i0 + 1) % pts2d.length;
+        const frac = f - Math.floor(f);
+        out.push([
+          pts2d[i0][0] * (1 - frac) + pts2d[i1][0] * frac,
+          pts2d[i0][1] * (1 - frac) + pts2d[i1][1] * frac,
+        ]);
+      }
+      return out;
+    };
+    const N = 48;
+    const sk1 = sketches.find((s) => s.id === node.sketchId) ?? sketches[0];
+    const sk2 = sketches.find((s) => s.id === node.sketchId2);
+    const botRaw: [number, number][] = sk1
+      ? shapeToPolylineMm(sk1).map(([px, py]) => [px - sk1.xMm, py - sk1.yMm])
+      : [[-w * 0.5, -d * 0.5], [w * 0.5, -d * 0.5], [w * 0.5, d * 0.5], [-w * 0.5, d * 0.5]];
+    const topRaw: [number, number][] = sk2
+      ? shapeToPolylineMm(sk2).map(([px, py]) => [px - sk2.xMm, py - sk2.yMm])
+      : Array.from({ length: N }, (_, i) => {
+          const a = (i / N) * Math.PI * 2;
+          const rScale = Math.max(0.15, 1 - Math.tan(((node.taperDeg ?? 18) * Math.PI) / 180) * 0.65);
+          return [Math.cos(a) * w * 0.5 * rScale, Math.sin(a) * d * 0.5 * rScale] as [number, number];
+        });
+    const bot = resampleRing(botRaw, N);
+    const top = resampleRing(topRaw, N);
+    const pos: number[] = [];
+    const rings = 8;
+    for (let r = 0; r < rings; r++) {
+      const t0 = r / rings;
+      const t1 = (r + 1) / rings;
+      const z0 = (t0 - 0.5) * h;
+      const z1 = (t1 - 0.5) * h;
+      for (let i = 0; i < N; i++) {
+        const j = (i + 1) % N;
+        const a0x = bot[i][0] * (1 - t0) + top[i][0] * t0;
+        const a0y = bot[i][1] * (1 - t0) + top[i][1] * t0;
+        const b0x = bot[j][0] * (1 - t0) + top[j][0] * t0;
+        const b0y = bot[j][1] * (1 - t0) + top[j][1] * t0;
+        const a1x = bot[i][0] * (1 - t1) + top[i][0] * t1;
+        const a1y = bot[i][1] * (1 - t1) + top[i][1] * t1;
+        const b1x = bot[j][0] * (1 - t1) + top[j][0] * t1;
+        const b1y = bot[j][1] * (1 - t1) + top[j][1] * t1;
+        pos.push(a0x, a0y, z0, b0x, b0y, z0, b1x, b1y, z1);
+        pos.push(a0x, a0y, z0, b1x, b1y, z1, a1x, a1y, z1);
+      }
+    }
+    // Bottom & top caps
+    for (let i = 0; i < N; i++) {
+      const j = (i + 1) % N;
+      pos.push(0, 0, -h * 0.5, bot[j][0], bot[j][1], -h * 0.5, bot[i][0], bot[i][1], -h * 0.5);
+      pos.push(0, 0, h * 0.5, top[i][0], top[i][1], h * 0.5, top[j][0], top[j][1], h * 0.5);
+    }
+    geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    geo.computeVertexNormals();
+  } else if (node.kind === "sweep") {
+    // Sweep circular profile along sketch polyline or smooth S-curve
+    const sk = sketches.find((s) => s.id === node.sketchId);
+    const pts2d = sk ? shapeToPolylineMm(sk) : [];
+    const curvePts: THREE.Vector3[] =
+      pts2d.length >= 2
+        ? pts2d.map(([px, py]) => new THREE.Vector3(px - (sk?.xMm ?? 0), py - (sk?.yMm ?? 0), 0))
+        : [
+            new THREE.Vector3(-w * 0.5, -d * 0.3, -h * 0.3),
+            new THREE.Vector3(-w * 0.15, d * 0.35, 0),
+            new THREE.Vector3(w * 0.15, -d * 0.35, 0),
+            new THREE.Vector3(w * 0.5, d * 0.3, h * 0.3),
+          ];
+    const curve = new THREE.CatmullRomCurve3(curvePts);
+    const radius = Math.max(0.8, (node.wallThicknessMm ?? 4) * 0.5);
+    geo = new THREE.TubeGeometry(curve, 64, radius, 24, false);
+    geo.center();
+  } else if (node.kind === "shell") {
+    // Hollow open-top enclosure with exact wallThicknessMm
+    const wall = Math.max(0.8, Math.min(node.wallThicknessMm ?? 3, w * 0.4, d * 0.4, h * 0.45));
+    const outer = new THREE.BoxGeometry(w, d, h);
+    const inner = new THREE.BoxGeometry(Math.max(0.5, w - wall * 2), Math.max(0.5, d - wall * 2), Math.max(0.5, h));
+    inner.translate(0, 0, wall);
+    geo = csgBoolean(outer, inner, "subtract");
+    outer.dispose();
+    inner.dispose();
   } else {
-    // Revolve (dome/vase profile)
+    // Revolve (dome/vase profile with configurable revolveDeg)
     const lathePts: THREE.Vector2[] = [];
     const rMax = w * 0.5;
     for (let i = 0; i <= 24; i++) {
@@ -416,7 +561,8 @@ export function buildPrimitiveGeometry(node: SolidModelNode, sketches: VectorSha
       const zy = (t - 0.5) * h;
       lathePts.push(new THREE.Vector2(Math.max(0.01, rx), zy));
     }
-    geo = new THREE.LatheGeometry(lathePts, 64);
+    const phiLen = (Math.max(15, Math.min(360, node.revolveDeg ?? 360)) * Math.PI) / 180;
+    geo = new THREE.LatheGeometry(lathePts, 64, 0, phiLen);
     geo.rotateX(Math.PI / 2);
   }
 
@@ -437,7 +583,7 @@ export function buildPrimitiveGeometry(node: SolidModelNode, sketches: VectorSha
  * Evaluate the full 3D CSG solid stack (Union / Subtract / Intersect) into a watertight BufferGeometry.
  */
 export function evaluateSolidCsgStack(nodes: SolidModelNode[], sketches: VectorShape[]): THREE.BufferGeometry | null {
-  const visible = nodes.filter((n) => n.visible);
+  const visible = nodes.filter((n) => n.visible && !n.suppressed);
   if (visible.length === 0) return null;
 
   let acc = buildPrimitiveGeometry(visible[0], sketches);

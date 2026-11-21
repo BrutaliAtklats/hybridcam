@@ -1,3 +1,5 @@
+import { evalParamExpr } from "./parametricCad";
+
 export type VectorShapeKind = "rect" | "circle" | "polygon" | "polyline" | "text";
 export type VectorRole = "carve" | "cutout" | "vcarve" | "model3d";
 
@@ -18,6 +20,44 @@ export interface VectorShape {
   depthMm: number;
   role: VectorRole;
   sketchZMm?: number;
+  /** Optional parametric expressions keyed by field name (e.g. widthMm: "stock_w - wall * 2") */
+  paramExprs?: Record<string, string>;
+}
+
+/**
+ * Evaluate any parametric expressions bound to a VectorShape against the live parameter environment.
+ */
+export function resolveVectorShape(shape: VectorShape, env: Record<string, number>): VectorShape {
+  const exprs = shape.paramExprs;
+  if (!exprs || Object.keys(exprs).length === 0) return shape;
+  const next = { ...shape };
+  if (exprs.xMm) next.xMm = evalParamExpr(exprs.xMm, env, shape.xMm);
+  if (exprs.yMm) next.yMm = evalParamExpr(exprs.yMm, env, shape.yMm);
+  if (exprs.widthMm) next.widthMm = Math.max(0.5, evalParamExpr(exprs.widthMm, env, shape.widthMm));
+  if (exprs.heightMm) next.heightMm = Math.max(0.5, evalParamExpr(exprs.heightMm, env, shape.heightMm));
+  if (exprs.rotationDeg) next.rotationDeg = evalParamExpr(exprs.rotationDeg, env, shape.rotationDeg);
+  if (exprs.cornerRadiusMm) next.cornerRadiusMm = Math.max(0, evalParamExpr(exprs.cornerRadiusMm, env, shape.cornerRadiusMm));
+  if (exprs.depthMm) next.depthMm = Math.max(0.5, evalParamExpr(exprs.depthMm, env, shape.depthMm));
+  if (exprs.sketchZMm) next.sketchZMm = evalParamExpr(exprs.sketchZMm, env, shape.sketchZMm ?? 0);
+  return next;
+}
+
+/**
+ * Create a concentric inward/outward offset copy of a sketch shape (Fusion Sketch Offset tool).
+ */
+export function createOffsetVectorShape(shape: VectorShape, offsetMm: number): VectorShape {
+  const newW = Math.max(1, Number((shape.widthMm + offsetMm * 2).toFixed(2)));
+  const newH = Math.max(1, Number((shape.heightMm + offsetMm * 2).toFixed(2)));
+  const newR = shape.cornerRadiusMm > 0 ? Math.max(0, Number((shape.cornerRadiusMm + offsetMm).toFixed(2))) : 0;
+  return {
+    ...shape,
+    id: `vec-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    name: `${shape.name} Offset (${offsetMm >= 0 ? "+" : ""}${offsetMm})`,
+    widthMm: newW,
+    heightMm: newH,
+    cornerRadiusMm: newR,
+    paramExprs: undefined,
+  };
 }
 
 /**

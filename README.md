@@ -8,10 +8,12 @@ HybridCAM is a fast, offline-first CAD/CAM desktop application built with **Reac
 
 ## Key Features
 
-### 1. Design (Picture · 2D Vectors · 3D Solid CSG)
-- **Picture Mode**: Multi-layer depth-map compositing (`Merge High`, `Add`, `Subtract`, `Merge Low`), built-in shapes, text layers, `.SVG` import, 2D brush sculpting (`Raise +`, `Lower -`, `Smooth`), alignment, **Trim Bed** to picture footprint, and edge feathering.
-- **2D Vector CAD**: Interactive drawing (`Select`, `Rectangle`, `Circle`, `Polygon`, `Polyline`, `Text`), **`.SVG` & `.DXF` import**, **`.DXF` export**, `Offset ±2mm`, `Duplicate`, and `Array ×3`.
-- **3D Solid Modeler (Fusion-Style)**: Pure-TypeScript 3D CSG boolean engine (`Join`, `Cut`, `Intersect`), `+ Stock Blank`, `Extrude` from 2D sketches, `Revolve`, `Hole (Cut)`, `Box`, `Cylinder`, `Pipe`, `Sphere`, `Torus`, `Wedge`, `Pull/Push`, `Mirror X/Y`, `Pattern ×3`, timeline reordering, and **3D viewport `TransformControls` drag gizmo**.
+### 1. Design (Autodesk Fusion 360-Style Parametric CAD + Photo/Relief)
+- **Unified Fusion 360 Command Ribbon**: Docked dark-gray CAD ribbon with **`SOLID`**, contextual **`SKETCH`**, and **`PHOTO / RELIEF`** tabs, **`CREATE ▾ / MODIFY ▾ / CONSTRUCT ▾ / INSPECT ▾ / INSERT`** dropdown menus, **`S` Design Shortcuts Search**, **Right-Click Context Menu**, **ViewCube**, **Browser Tree**, and **Bottom Parametric Timeline** with **Rollback Marker** & feature suppression.
+- **Parametric Expression Engine (`fx Change Parameters`)**: Define named parameters (`wall`, `hole_d`, `fillet_r`) and math formulas (`stock_w - wall * 2`, `sin`, `cos`, `sqrt`) bound live to any sketch or 3D solid dimension.
+- **Interactive 2D Sketching**: Click glowing 3D **Origin Planes (`XY / XZ / YZ`)**, **Construction Offset Planes**, or **any 3D Solid Top Face** to start sketching; draw with `Line`, `2-Point Rect`, `Center Rect`, `Circle`, `Arc`, `Fit-Point Spline`, `Slot`, `Polygon`, and `Text` with **Adaptive Zoom Grid**, **Snap-to-Grid Pointer**, live **Inference Symbols** (`⊙ Origin`, `□ Endpoint`, `△ Midpoint`, `◎ Center`, `― Horiz`, `| Vert`, `∟ 90°`), **Floating Dimension Entry (`Tab` to switch, `Enter` to commit)**, **Construction Geometry (`X`)**, **Offset (`+/-` Flip)**, **Trim (`T`)**, **Constraints**, **Project 3D (`P`)**, and **Sketch Patterns**.
+- **Advanced 3D Solid Modeling**: Floating **Operation Dialogs** with live 3D preview (`OK / Cancel`) for `Extrude` (`One Side / Symmetric / Two Sides` + `Draft/Taper`), `Revolve`, `Loft`, `Sweep`, `Rib`, `Emboss Text (3D)`, `Shell`, `Hole` (`Simple / Counterbore / Countersink` + `M3–M8 / 1/4"-20` bolt presets), `Fillet (Rounded)`, `Chamfer (45°)`, `Move / Copy (M)` (`Free / Translate / Rotate` + `Create Copy`), `Combine`, `Split Body`, `Scale`, `Align`, `Rectangular & Circular Patterns`, `Mirror`, `Section Analysis`, `Appearance / Material Library`, **`.STL` Solid Import / Per-Body Export**, **Direct 3D Click-to-Select / Double-Click-to-Edit**, and **1-Click `→ Send to CAM`**.
+- **Photo / Relief Mode**: Multi-layer depth-map compositing (`Merge High`, `Add`, `Subtract`, `Merge Low`), built-in shapes, text layers, `.SVG` import, 2D brush sculpting (`Raise +`, `Lower -`, `Smooth`), double-click resize with top-layer **Machine Bed Outline**, alignment, **Trim Bed**, and edge feathering.
 
 ### 2. 3D Relief & Mesh Sculpting
 - Import **PNG / JPG / TIFF / EXR** depth maps (auto-fit to bed) and **Binary/ASCII `.STL`** meshes.
@@ -45,9 +47,11 @@ HybridCAM is a fast, offline-first CAD/CAM desktop application built with **Reac
 
 ## Keyboard Shortcuts
 - `Ctrl+S`: Save Project (`.hcam`)
-- `Ctrl+Z` / `Ctrl+Y`: Undo / Redo
-- `1` – `6`: Switch workflow tabs (`Design` → `Run CNC`)
-- `R`: Reset 3D camera to Isometric view
+- `Ctrl+Z` / `Ctrl+Y`: Undo / Redo (CAD 3D, Sketch, Photo & 3D Sculpt)
+- `S`: Open **Design Shortcuts** search popup (in Design CAD)
+- `K` / `E` / `M` / `F` / `H` / `A` / `I`: `Create Sketch`, `Extrude`, `Move / Copy`, `Fillet`, `Hole`, `Appearance`, `Measure` (in SOLID)
+- `V` / `L` / `R` / `C` / `O` / `T` / `D` / `X` / `P` / `G`: `Select`, `Line`, `Rect`, `Circle`, `Slot`, `Trim`, `Dimension`, `Construction`, `Project 3D`, `Grid Snap` (in SKETCH)
+- `Tab` / `Enter` / `Esc`: Switch size fields / commit / cancel in Sketch dimension prompts
 - `Space`: Play / Pause Simulation (on **Simulate** tab)
 
 ---

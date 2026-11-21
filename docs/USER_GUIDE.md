@@ -73,29 +73,18 @@ At the top of **1. Design**, use the **Include** checkboxes (`Picture`, `Vectors
   - `Raise +` / `Lower -` / `Smooth`: Paint height adjustments directly on the 2D canvas with adjustable **Brush Size** and **Brush Strength**.
 - **Layer Adjustments**: `Weight`, `Scale`, `Pos X/Y`, `Rotation (-90° / 0° / +90° / Flip H / Flip V)`, `Edge Fade (Feather)`, `Brightness`, `Shadow Clip`, and `Highlight Clip`.
 
-### B. Vectors Mode (2D CAD)
-- **Sketch Tools**: `Select`, `Rectangle`, `Circle`, `Polygon`, `Polyline`, and `Text Box`.
-- **Import / Export**:
-  - **`.SVG`**: Import SVG paths, rects, circles, and polygons.
-  - **`.DXF`**: Import ASCII `.dxf` (`LINE`, `LWPOLYLINE`, `CIRCLE`) — auto-centered and scaled to fit your bed if oversized.
-  - **`DXF ↓`**: Export visible vector shapes as an ASCII `.dxf` file.
-- **Shape Role** (determines which CAM operations use the shape):
-  - `Cutout / Contour`: Used by `2D Contour + Tabs` and `V-Carving`.
-  - `Pocket / Recessed Carve`: Used by `2D Pocket`, `2D Adaptive`, and `2D Offset + Arcs`.
-  - `True V-Carve`: Used by `V-Carving`.
-  - `Raised 3D Boss`: Adds a raised boss onto the 3D relief heightfield.
-- **Quick Modify**: `Offset +2` (outward), `Offset -2` (inward), `Duplicate`, and `Array ×3` (linear pattern).
-
-### C. 3D Model Mode (Fusion-Style Solid CSG)
-- **+ Stock Blank**: Inserts a full stock block (`widthMm × depthMm × thicknessMm`) as your base body so you can immediately cut holes and pockets into it.
-- **CREATE**:
-  - `Extrude`: Extrudes a selected 2D Vector Sketch into a 3D solid (supports `Fillet / Chamfer`).
-  - `Revolve`: Revolves a profile 360° around Z.
-  - `Hole (Cut)`: Creates a subtractive cylindrical drill/bore hole (rendered with a red wireframe ghost so you can see and position it inside your part).
-  - Primitives: `Box`, `Cylinder`, `Pipe` (hollow tube), `Sphere`, `Torus`, `Wedge`.
-- **3D Viewport Gizmo**: Drag the red/green/blue **X/Y/Z arrows** directly on the selected body in the 3D viewport to reposition it interactively.
-- **MODIFY**: `Pull +2mm`, `Push -2mm`, `Duplicate`, `Mirror X`, `Mirror Y`, `Pattern ×3`.
-- **BROWSER & TIMELINE**: Toggle visibility, reorder features (`▲` / `▼`), switch operations (`Join` / `Cut` / `Intersect`), or delete.
+### B. Unified Design (CAD) — Autodesk Fusion 360-Style SOLID & SKETCH
+- **Command Ribbon**: Full-width dark-gray Fusion ribbon with **`SOLID`** (`CREATE ▾`, `MODIFY ▾`, `CONSTRUCT ▾`, `INSPECT ▾`, `INSERT`) and contextual green **`SKETCH`** (`CREATE`, `MODIFY`, `✓ FINISH SKETCH`) tabs, plus **`fx Parameters`**, **`→ Send to CAM`**, and **`🔍 Search (S)`**.
+- **3D Plane Picker (`Create Sketch` / `K`)**: Click any glowing 3D **Origin Plane (`XY Top`, `XY Floor`, `XZ`, `YZ`)**, **Construction Offset Plane**, or **any 3D Solid Top Face** to start sketching directly on that plane with ghost body silhouettes shown underneath.
+- **2D Sketching**:
+  - Tools: `Select (V)`, `Line (L)`, `2-Pt Rect (R)`, `Center Rect`, `Circle (C)`, `Arc`, `Fit-Point Spline`, `Slot (O)`, `Polygon`, `Text`, `Trim (T)`, `Dim (D)`.
+  - **Adaptive Grid & Live Snap Symbols**: Zoom-responsive major/minor grid with magnet-snap pointer and live `⊙ Origin`, `□ Endpoint`, `△ Midpoint`, `◎ Center`, `― Horiz`, `| Vert`, `∟ 90°`, and `=` Square inference badges.
+  - **Floating Size Prompt**: After dragging a shape, type exact `W` / `H` dimensions (`Tab` to switch boxes, `Enter` to create, `Esc` to cancel); finish `Line`/`Spline` chains with the floating green `✓` button, `Enter`, `Esc`, or clicking the start point to auto-close.
+  - **Sketch Palette**: `Snap to Grid`, `Show Dimensions`, `Construction Line (X)`, Geometric Constraints (`Concentric`, `Equal`, `Horizontal`, `Vertical`), `Project 3D (P)`, `Sketch Pattern` (Rectangular & Circular Bolt Circle), and `Offset` (`+ / -` with `⇄ Flip`).
+- **3D Solid Modeling (Operation Dialogs with Live Preview)**:
+  - **CREATE**: `Extrude (E)` (`One Side / Symmetric / Two Sides` + `Draft/Taper`), `Revolve`, `Sweep`, `Loft`, `Rib`, `Emboss Text (3D)`, `Hole (H)` (`Simple / Counterbore / Countersink` + `M3–M8 / 1/4"-20` bolt presets), `Box`, `Cylinder`, `Sphere`, `Torus`, `Pipe`, `Wedge`, `Rectangular & Circular Patterns`, `Mirror`, `Stock Blank`.
+  - **MODIFY**: `Move / Copy (M)` (`Free / Translate / Rotate` + `Create Copy`), `Fillet (F)`, `Chamfer (45°)`, `Shell`, `Combine`, `Split Body`, `Scale`, `Align`, `Floor Snap`, `Appearance (A)` (per-body materials), and **`fx Change Parameters`** (live formula evaluation like `stock_w - wall * 2`).
+  - **Direct 3D Viewport**: Interactive **ViewCube**, **Click-to-Select** bodies & sketches, **Double-Click-to-Edit** bodies, **Section Analysis** live cross-section cut, **Stock Envelope (`⬚ Stock`)**, **Right-Click Context Menu**, **`.STL` Solid Import / Per-Body Export**, **Browser Tree**, **Bottom Parametric Timeline** with **Rollback Marker**, and **1-Click `→ Send to CAM`**.
 
 ---
 

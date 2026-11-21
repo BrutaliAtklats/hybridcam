@@ -76,7 +76,6 @@ interface CamOpTemplate {
 import { SketchToolMode, VectorSketchView } from "./VectorSketchView";
 import {
   createOffsetVectorShape,
-  exportVectorShapesToDxf,
   parseDxfToVectorShapes,
   parseSvgToVectorShapes,
   rasterizeVectorShapesToGrid,
@@ -89,16 +88,31 @@ import {
   BooleanOp,
   buildPrimitiveGeometry,
   evaluateSolidCsgStack,
+  parseStlToPositions,
   resolveSolidNode,
   sampleSolidToHeightfield,
   SolidModelNode,
   SolidPrimitiveKind,
 } from "./solidCsg";
 import { DEFAULT_USER_PARAMETERS, resolveParameterEnv, UserParameter } from "./parametricCad";
-import { ParametricModal, ParamInput } from "./ParametricModal";
+import { ParametricModal } from "./ParametricModal";
+import { FusionBrowserTree } from "./cad/FusionBrowserTree";
+import { ContextMenuItem, FusionContextMenu } from "./cad/FusionContextMenu";
+import { FusionOperationDialog } from "./cad/FusionOperationDialog";
+import { FusionShortcutBox, ShortcutCommand } from "./cad/FusionShortcutBox";
+import { FusionSketchPalette } from "./cad/FusionSketchPalette";
+import { FusionTopRibbon } from "./cad/FusionTopRibbon";
+import { FusionViewportControls } from "./cad/FusionViewportControls";
+import {
+  ConstructionPlane,
+  FusionOpDialogState,
+  OriginVisibility,
+  SectionAnalysisState,
+  SOLID_KIND_LABELS,
+} from "./cad/fusionTypes";
 
 type WorkflowStep = "layout" | "relief" | "toolpaths" | "simulate" | "export" | "run" | "settings";
-type DesignMode = "picture" | "vector" | "model3d";
+type DesignMode = "picture" | "model3d";
 type ShadingMode = "clay" | "material" | "heatmap" | "wireframe";
 type ViewportSource = "relief" | "carved";
 
@@ -529,6 +543,35 @@ export default function App() {
     loadJson<UserParameter[]>("hybridcam.userParams", DEFAULT_USER_PARAMETERS)
   );
   const [showParamsModal, setShowParamsModal] = useState<boolean>(false);
+  const [fusionDialog, setFusionDialog] = useState<FusionOpDialogState | null>(null);
+  const [originVis, setOriginVis] = useState<OriginVisibility>({ master: false, xy: true, xz: true, yz: true, axes: true });
+  const [constructionPlanes, setConstructionPlanes] = useState<ConstructionPlane[]>([]);
+  const [showSketchDims, setShowSketchDims] = useState<boolean>(true);
+  const [timelineRollback, setTimelineRollback] = useState<number | null>(null);
+  const [showShortcutBox, setShowShortcutBox] = useState<boolean>(false);
+  const [showStockOverlay, setShowStockOverlay] = useState<boolean>(false);
+  const [hoveredPlaneLabel, setHoveredPlaneLabel] = useState<string>("");
+  const pickablePlanesRef = useRef<THREE.Mesh[]>([]);
+  const pickableSolidsRef = useRef<THREE.Mesh[]>([]);
+  const pickableSketchesRef = useRef<THREE.Object3D[]>([]);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; mode: "solid" | "sketch" } | null>(null);
+  const rightClick3dStart = useRef<{ x: number; y: number } | null>(null);
+  const [sectionAnalysis, setSectionAnalysis] = useState<SectionAnalysisState>({
+    enabled: false,
+    axis: "x",
+    offsetMm: 0,
+    flipped: false,
+  });
+  const cadUndoRef = useRef<Array<{ solids: SolidModelNode[]; sketches: VectorShape[] }>>([]);
+  const cadRedoRef = useRef<Array<{ solids: SolidModelNode[]; sketches: VectorShape[] }>>([]);
+  const pushCadUndo = () => {
+    cadUndoRef.current.push({
+      solids: solidModels.map((m) => ({ ...m })),
+      sketches: vectorShapes.map((s) => ({ ...s })),
+    });
+    if (cadUndoRef.current.length > 40) cadUndoRef.current.shift();
+    cadRedoRef.current = [];
+  };
   useEffect(() => {
     try {
       localStorage.setItem("hybridcam.userParams", JSON.stringify(userParams));
@@ -605,7 +648,6 @@ export default function App() {
   const [closeDontAskDraft, setCloseDontAskDraft] = useState(false);
   const skipClosePromptRef = useRef(skipClosePrompt);
   skipClosePromptRef.current = skipClosePrompt;
-  const allowCloseRef = useRef(false);
 
   useEffect(() => {
     localStorage.setItem("hybridcam.skipClosePrompt", String(skipClosePrompt));
@@ -697,16 +739,44 @@ export default function App() {
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) {
         return;
       }
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.ctrlKey || e.metaKey) {
+        if (step === "layout" && designMode !== "picture" && e.key.toLowerCase() === "z") {
+          const prev = cadUndoRef.current.pop();
+          if (prev) {
+            e.preventDefault();
+            cadRedoRef.current.push({ solids: solidModels, sketches: vectorShapes });
+            setSolidModels(prev.solids);
+            setVectorShapes(prev.sketches);
+          }
+          return;
+        }
+        if (step === "layout" && designMode !== "picture" && e.key.toLowerCase() === "y") {
+          const next = cadRedoRef.current.pop();
+          if (next) {
+            e.preventDefault();
+            cadUndoRef.current.push({ solids: solidModels, sketches: vectorShapes });
+            setSolidModels(next.solids);
+            setVectorShapes(next.sketches);
+          }
+          return;
+        }
+        return;
+      }
+      if (e.altKey) return;
       if (step !== "layout") return;
 
       const key = e.key.toLowerCase();
+      if (key === "s" && designMode !== "picture") {
+        e.preventDefault();
+        setShowShortcutBox(true);
+        return;
+      }
       if (key === "1") { setDesignMode("picture"); setIsSketchingIn3d(false); return; }
       if (key === "2") { setDesignMode("model3d"); setIsSketchingIn3d(false); return; }
       if (key === "3") { setDesignMode("model3d"); setSketchTool("rect"); setIsSketchingIn3d(true); return; }
 
       if (e.key === "Delete" || e.key === "Backspace") {
-        if (designMode === "vector" || (designMode === "model3d" && isSketchingIn3d)) {
+        if (designMode === "model3d" && isSketchingIn3d) {
           if (activeVectorId) {
             e.preventDefault();
             setVectorShapes((vs) => {
@@ -741,12 +811,19 @@ export default function App() {
         }
       }
 
-      if (designMode === "vector" || (designMode === "model3d" && isSketchingIn3d)) {
+      if (designMode === "model3d" && isSketchingIn3d) {
         if (key === "v") { setSketchTool("select"); return; }
         if (key === "r") { setSketchTool("rect"); return; }
         if (key === "c") { setSketchTool("circle"); return; }
         if (key === "o") { setSketchTool("slot"); return; }
-        if (key === "p") { setSketchTool("polygon"); return; }
+        if (key === "p") { projectActiveSolidToSketch(); return; }
+        if (key === "t") { setSketchTool("trim"); return; }
+        if (key === "d") { setSketchTool("dimension"); return; }
+        if (key === "x") {
+          const act = vectorShapes.find((s) => s.id === activeVectorId);
+          if (act) setVectorShapes((vs) => vs.map((x) => (x.id === act.id ? { ...x, construction: !x.construction } : x)));
+          return;
+        }
         if (key === "l") { setSketchTool("polyline"); return; }
         if (key === "g") { setSnapToGrid((s) => !s); return; }
         if (e.key === "Escape") {
@@ -760,35 +837,24 @@ export default function App() {
         if (key === "n") { setToolMode("paintLower"); return; }
         if (key === "h") { setToolMode("paintSmooth"); return; }
       } else if (designMode === "model3d" && !isSketchingIn3d) {
-        if (key === "k") { setSketchTool("rect"); setIsSketchingIn3d(true); return; }
-        if (key === "e") {
-          const sk = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
-          const extH = sk ? Math.max(1, sk.depthMm || 5) : 10;
-          const id = `solid-${Date.now()}`;
-          setSolidModels((ms) => [
-            ...ms,
-            {
-              id,
-              name: sk ? `Extrude ${sk.name}` : `Extrude ${ms.length + 1}`,
-              kind: "extrude",
-              visible: true,
-              boolOp: "union",
-              xMm: sk ? sk.xMm : 0,
-              yMm: sk ? sk.yMm : 0,
-              zMm: snap3dToFloor ? -job.thicknessMm + extH * 0.5 : (sk ? (sk.sketchZMm ?? 0) + extH * 0.5 : 0),
-              widthMm: sk ? sk.widthMm : 50,
-              depthMm: sk ? sk.heightMm : 50,
-              heightMm: extH,
-              rotXDeg: 0,
-              rotYDeg: 0,
-              rotZDeg: sk ? sk.rotationDeg : 0,
-              bevelMm: 0,
-              sketchId: sk?.id,
-            },
-          ]);
-          setActiveSolidId(id);
+        if (key === "k") { setFusionDialog({ kind: "sketchPlane", title: "Select Sketch Plane" }); return; }
+        if (key === "m") { openMoveCopyDialog(); return; }
+        if (key === "a") { setFusionDialog({ kind: "appearance", title: "Appearance / Material" }); return; }
+        if (key === "e") { openCreateSolidDialog("extrude", "union"); return; }
+        if (key === "h") { openCreateSolidDialog("hole", "subtract"); return; }
+        if (key === "f") {
+          const act = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
+          if (act) {
+            setFusionDialog({
+              kind: "fillet",
+              title: "Fillet (Rounded)",
+              draftSolid: { ...act, bevelStyle: "fillet", bevelMm: act.bevelMm > 0 ? act.bevelMm : 2 },
+              editingSolidId: act.id,
+            });
+          }
           return;
         }
+        if (key === "i") { setFusionDialog({ kind: "measure", title: "Inspect / Measure" }); return; }
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -874,29 +940,21 @@ export default function App() {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
         handleSaveProject();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !(step === "layout" && designMode === "model3d")) {
         e.preventDefault();
         if (e.shiftKey) handleRedo();
         else handleUndo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y" && !(step === "layout" && designMode === "model3d")) {
         e.preventDefault();
         handleRedo();
-      } else if (!inInput && !e.ctrlKey && !e.metaKey && ["1", "2", "3", "4", "5"].includes(e.key)) {
+      } else if (!inInput && !e.ctrlKey && !e.metaKey && step !== "layout" && ["1", "2", "3", "4", "5"].includes(e.key)) {
         const steps: WorkflowStep[] = ["layout", "relief", "toolpaths", "simulate", "export"];
         setStep(steps[Number(e.key) - 1]);
-      } else if (!inInput && e.key.toLowerCase() === "r") {
+      } else if (!inInput && step !== "layout" && e.key.toLowerCase() === "r") {
         setCameraPreset("iso");
       } else if (!inInput && step === "simulate" && e.code === "Space") {
         e.preventDefault();
         setSimPlaying((p) => !p);
-      } else if (!inInput && step === "layout" && (e.key === "Delete" || e.key === "Backspace") && activeLayer) {
-        e.preventDefault();
-        pushUndoSnapshot();
-        setLayers((ls) => {
-          const next = ls.filter((x) => x.id !== activeLayer.id);
-          setActiveLayerId(next[0]?.id ?? "");
-          return next;
-        });
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -918,12 +976,32 @@ export default function App() {
     [solidModels, paramEnv]
   );
 
+  const effectiveSolidModels = useMemo(() => {
+    const sliced = timelineRollback === null ? resolvedSolidModels : resolvedSolidModels.slice(0, timelineRollback);
+    if (!fusionDialog?.draftSolid) return sliced;
+    const draftResolved = resolveSolidNode(fusionDialog.draftSolid, paramEnv);
+    if (fusionDialog.kind === "createSolid" || (fusionDialog.kind === "moveCopy" && fusionDialog.moveCreateCopy)) {
+      return [...sliced, draftResolved];
+    }
+    if (
+      (fusionDialog.kind === "editSolid" ||
+        fusionDialog.kind === "fillet" ||
+        fusionDialog.kind === "chamfer" ||
+        fusionDialog.kind === "scale" ||
+        (fusionDialog.kind === "moveCopy" && !fusionDialog.moveCreateCopy)) &&
+      fusionDialog.editingSolidId
+    ) {
+      return sliced.map((m) => (m.id === fusionDialog.editingSolidId ? draftResolved : m));
+    }
+    return sliced;
+  }, [resolvedSolidModels, timelineRollback, fusionDialog, paramEnv]);
+
   const solidCsgGeo = useMemo(
     () =>
-      enable3dModelMode && resolvedSolidModels.length > 0
-        ? evaluateSolidCsgStack(resolvedSolidModels, resolvedVectorShapes)
+      enable3dModelMode && effectiveSolidModels.length > 0
+        ? evaluateSolidCsgStack(effectiveSolidModels, resolvedVectorShapes)
         : null,
-    [enable3dModelMode, resolvedSolidModels, resolvedVectorShapes]
+    [enable3dModelMode, effectiveSolidModels, resolvedVectorShapes]
   );
 
   const reliefHeights = useMemo(() => {
@@ -1935,6 +2013,9 @@ export default function App() {
     if (step === "layout" && designMode === "model3d" && activeSolid) {
       const topZ = job.zZero === "top" ? 0 : job.thicknessMm;
       activeSolidRef.current = { id: activeSolid.id, topZ };
+      ctx.transformControls.setMode(
+        fusionDialog?.kind === "moveCopy" && fusionDialog.moveMode === "rotate" ? "rotate" : "translate"
+      );
       ctx.gizmoTarget.position.set(activeSolid.xMm, activeSolid.yMm, topZ + activeSolid.zMm);
       ctx.transformControls.attach(ctx.gizmoTarget);
     } else {
@@ -1942,7 +2023,7 @@ export default function App() {
       ctx.transformControls.detach();
     }
     needsRenderRef.current = true;
-  }, [step, designMode, activeSolidId, solidModels, job.zZero, job.thicknessMm]);
+  }, [step, designMode, activeSolidId, solidModels, job.zZero, job.thicknessMm, fusionDialog]);
 
   const sculptingNow = useRef(false);
   const flattenTargetRef = useRef(0.5);
@@ -2143,6 +2224,16 @@ export default function App() {
     } else if (isSimulatingView && simSliceAxis === "y") {
       const cutY = ((simSlicePct / 100) - 0.5) * job.depthMm;
       planes.push(new THREE.Plane(new THREE.Vector3(0, -1, 0), cutY));
+    } else if (isModel3dView && sectionAnalysis.enabled) {
+      const sign = sectionAnalysis.flipped ? 1 : -1;
+      const topZ = job.zZero === "top" ? 0 : job.thicknessMm;
+      if (sectionAnalysis.axis === "x") {
+        planes.push(new THREE.Plane(new THREE.Vector3(sign, 0, 0), -sign * sectionAnalysis.offsetMm));
+      } else if (sectionAnalysis.axis === "y") {
+        planes.push(new THREE.Plane(new THREE.Vector3(0, sign, 0), -sign * sectionAnalysis.offsetMm));
+      } else {
+        planes.push(new THREE.Plane(new THREE.Vector3(0, 0, sign), -sign * (topZ + sectionAnalysis.offsetMm)));
+      }
     }
     const ctx = sceneObjectsRef.current;
     if (ctx) {
@@ -2155,7 +2246,7 @@ export default function App() {
       }
       needsRenderRef.current = true;
     }
-  }, [isSimulatingView, simSliceAxis, simSlicePct, job.widthMm, job.depthMm]);
+  }, [isSimulatingView, isModel3dView, simSliceAxis, simSlicePct, sectionAnalysis, job.widthMm, job.depthMm, job.zZero, job.thicknessMm]);
 
   // 2. Update 3D mesh (Relief Design OR Carved Dexel Stock) + Toolpaths in-place
   useEffect(() => {
@@ -2176,7 +2267,35 @@ export default function App() {
 
     // When in 3D Solid Modeling mode on the Design tab, render the true full-solid CSG mesh directly
     if (step === "layout" && designMode === "model3d") {
-      if (solidCsgGeo) {
+      pickableSolidsRef.current = [];
+      pickableSketchesRef.current = [];
+      const visSolids = effectiveSolidModels.filter((m) => m.visible && !m.suppressed);
+      const hasBooleans = visSolids.some((m, idx) => idx > 0 && m.boolOp !== "union");
+      const hasMultiColors = new Set(visSolids.map((m) => m.colorHex || "")).size > 1;
+
+      if (!hasBooleans && hasMultiColors && shading !== "wireframe") {
+        // True Per-Body Multi-Material Rendering when bodies have distinct Appearances!
+        const previewMat = PREVIEW_MATERIALS.find((m) => m.id === previewMatId) ?? PREVIEW_MATERIALS[0];
+        for (const m of visSolids) {
+          const g = buildPrimitiveGeometry(m, resolvedVectorShapes);
+          const mat = new THREE.MeshStandardMaterial({
+            color: shading === "clay" ? 0xc2c8d2 : m.colorHex || previewMat.color,
+            roughness: shading === "material" ? previewMat.roughness : 0.36,
+            metalness: shading === "material" ? previewMat.metalness : 0.08,
+            side: THREE.DoubleSide,
+            clippingPlanes: clipPlanesRef.current.length > 0 ? clipPlanesRef.current : undefined,
+          });
+          const mesh = new THREE.Mesh(g, mat);
+          mesh.position.set(0, 0, topZ);
+          mesh.userData = { solidId: m.id };
+          dynamicGroup.add(mesh);
+          pickableSolidsRef.current.push(mesh);
+          if (m.id === activeSolidId) {
+            ctx.reliefGeo = g;
+            ctx.reliefMesh = mesh;
+          }
+        }
+      } else if (solidCsgGeo) {
         const previewMat = PREVIEW_MATERIALS.find((m) => m.id === previewMatId) ?? PREVIEW_MATERIALS[0];
         if (shading === "wireframe") {
           const coreMat = new THREE.MeshBasicMaterial({
@@ -2210,11 +2329,14 @@ export default function App() {
           edgeLines.position.set(0, 0, topZ);
           dynamicGroup.add(edgeLines);
         } else {
+          const baseSolidColor =
+            (effectiveSolidModels.find((m) => m.id === activeSolidId) ?? effectiveSolidModels[0])?.colorHex;
           const mat = new THREE.MeshStandardMaterial({
-            color: shading === "clay" ? 0xc2c8d2 : previewMat.color,
+            color: shading === "clay" ? 0xc2c8d2 : baseSolidColor ? baseSolidColor : previewMat.color,
             roughness: shading === "material" ? previewMat.roughness : 0.36,
             metalness: shading === "material" ? previewMat.metalness : 0.08,
             side: THREE.DoubleSide,
+            clippingPlanes: clipPlanesRef.current.length > 0 ? clipPlanesRef.current : undefined,
           });
           const solidMesh = new THREE.Mesh(solidCsgGeo.clone(), mat);
           solidMesh.position.set(0, 0, topZ);
@@ -2222,16 +2344,28 @@ export default function App() {
           ctx.reliefMesh = solidMesh;
           dynamicGroup.add(solidMesh);
         }
+        // Add invisible raycast hit proxies so Click-to-Select & Double-Click-to-Edit work on every body!
+        for (const m of visSolids) {
+          const hg = buildPrimitiveGeometry(m, resolvedVectorShapes);
+          const hm = new THREE.MeshBasicMaterial({ visible: false });
+          const hitMesh = new THREE.Mesh(hg, hm);
+          hitMesh.position.set(0, 0, topZ);
+          hitMesh.userData = { solidId: m.id };
+          dynamicGroup.add(hitMesh);
+          pickableSolidsRef.current.push(hitMesh);
+        }
       }
-      const activeSolid = resolvedSolidModels.find((m) => m.id === activeSolidId) ?? resolvedSolidModels[0];
-      if (activeSolid && activeSolid.visible && !activeSolid.suppressed) {
-        const ghostGeo = buildPrimitiveGeometry(activeSolid, resolvedVectorShapes);
+      const previewTarget = fusionDialog?.draftSolid
+        ? resolveSolidNode(fusionDialog.draftSolid, paramEnv)
+        : effectiveSolidModels.find((m) => m.id === activeSolidId) ?? effectiveSolidModels[0];
+      if (previewTarget && previewTarget.visible && !previewTarget.suppressed) {
+        const ghostGeo = buildPrimitiveGeometry(previewTarget, resolvedVectorShapes);
         const ghostColor =
-          activeSolid.boolOp === "subtract" ? 0xf87171 : activeSolid.boolOp === "intersect" ? 0xfbbf24 : 0x38bdf8;
+          previewTarget.boolOp === "subtract" ? 0xf87171 : previewTarget.boolOp === "intersect" ? 0xfbbf24 : 0x38bdf8;
         const ghostMat = new THREE.MeshBasicMaterial({
           color: ghostColor,
           transparent: true,
-          opacity: activeSolid.boolOp === "subtract" ? 0.24 : 0.14,
+          opacity: previewTarget.boolOp === "subtract" ? 0.28 : 0.16,
           depthWrite: false,
           side: THREE.DoubleSide,
         });
@@ -2240,11 +2374,187 @@ export default function App() {
         dynamicGroup.add(ghostMesh);
 
         const edgeGeo = new THREE.EdgesGeometry(ghostGeo, 45);
-        const edgeMat = new THREE.LineBasicMaterial({ color: ghostColor, transparent: true, opacity: 0.75 });
+        const edgeMat = new THREE.LineBasicMaterial({ color: ghostColor, transparent: true, opacity: 0.85 });
         const edgeLines = new THREE.LineSegments(edgeGeo, edgeMat);
         edgeLines.position.set(0, 0, topZ);
         dynamicGroup.add(edgeLines);
+
+        // Fusion 360 Blue 3D Extrude / Pull Arrow Indicator while Operation Dialog is open
+        if (fusionDialog?.draftSolid) {
+          const arrowTopZ = topZ + previewTarget.zMm + previewTarget.heightMm * 0.5 + 8;
+          const arrowShaft = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.9, 0.9, 12, 16),
+            new THREE.MeshBasicMaterial({ color: 0x0696d7 })
+          );
+          arrowShaft.rotation.x = Math.PI / 2;
+          arrowShaft.position.set(previewTarget.xMm, previewTarget.yMm, arrowTopZ - 4);
+          dynamicGroup.add(arrowShaft);
+          const arrowCone = new THREE.Mesh(
+            new THREE.ConeGeometry(2.8, 7, 20),
+            new THREE.MeshBasicMaterial({ color: 0x38bdf8 })
+          );
+          arrowCone.rotation.x = Math.PI / 2;
+          arrowCone.position.set(previewTarget.xMm, previewTarget.yMm, arrowTopZ + 4);
+          dynamicGroup.add(arrowCone);
+        }
       }
+
+      // Translucent CNC Stock & Clearance Envelope Overlay
+      if (showStockOverlay) {
+        const sGeo = new THREE.BoxGeometry(job.widthMm, job.depthMm, job.thicknessMm);
+        const sMat = new THREE.MeshBasicMaterial({
+          color: 0xf59e0b,
+          transparent: true,
+          opacity: 0.08,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        });
+        const sMesh = new THREE.Mesh(sGeo, sMat);
+        sMesh.position.set(0, 0, (topZ + bottomZ) * 0.5);
+        dynamicGroup.add(sMesh);
+        const sEdges = new THREE.LineSegments(
+          new THREE.EdgesGeometry(sGeo),
+          new THREE.LineBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.65 })
+        );
+        sEdges.position.set(0, 0, (topZ + bottomZ) * 0.5);
+        dynamicGroup.add(sEdges);
+      }
+
+      // Render visible 2D sketches in Solid view (clickable to select & press E to extrude!)
+      for (const vs of resolvedVectorShapes) {
+        if (!vs.visible) continue;
+        const pts2d = shapeToPolylineMm(vs);
+        if (pts2d.length < 2) continue;
+        const zPlane = topZ + (vs.sketchZMm ?? 0) + 0.18;
+        const pts3d = pts2d.map(([x, y]) => new THREE.Vector3(x, y, zPlane));
+        const skGeo = new THREE.BufferGeometry().setFromPoints(pts3d);
+        const isSel = vs.id === activeVectorId;
+        const skMat = new THREE.LineBasicMaterial({
+          color: vs.construction ? 0xf59e0b : isSel ? 0x38bdf8 : 0x60a5fa,
+          transparent: true,
+          opacity: isSel ? 1.0 : 0.8,
+        });
+        const isOpen = vs.kind === "polyline" || vs.kind === "arc" || vs.kind === "spline";
+        const skObj = isOpen ? new THREE.Line(skGeo, skMat) : new THREE.LineLoop(skGeo, skMat);
+        skObj.userData = { sketchId: vs.id };
+        dynamicGroup.add(skObj);
+        pickableSketchesRef.current.push(skObj);
+      }
+
+      // Render Fusion Origin Planes (XY / XZ / YZ) when Origin visibility is enabled OR when picking a Sketch Plane!
+      pickablePlanesRef.current = [];
+      const pickingSketchPlane = fusionDialog?.kind === "sketchPlane";
+      if (originVis.master || pickingSketchPlane) {
+        const pSize = Math.min(job.widthMm, job.depthMm) * (pickingSketchPlane ? 0.52 : 0.45);
+        const makePlane = (
+          rx: number,
+          ry: number,
+          zOff: number,
+          color: number,
+          label: string,
+          sketchZ: number
+        ) => {
+          const pg = new THREE.PlaneGeometry(pSize, pSize);
+          const pm = new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity: pickingSketchPlane ? 0.24 : 0.16,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+          });
+          const meshP = new THREE.Mesh(pg, pm);
+          meshP.rotation.set(rx, ry, 0);
+          meshP.position.set(0, 0, topZ + zOff);
+          meshP.userData = {
+            isPickableSketchPlane: pickingSketchPlane,
+            sketchPlaneZ: sketchZ,
+            sketchPlaneLabel: label,
+            baseColor: color,
+            baseOpacity: pickingSketchPlane ? 0.24 : 0.16,
+          };
+          dynamicGroup.add(meshP);
+          if (pickingSketchPlane) pickablePlanesRef.current.push(meshP);
+          const pe = new THREE.LineSegments(
+            new THREE.EdgesGeometry(pg),
+            new THREE.LineBasicMaterial({ color, transparent: true, opacity: pickingSketchPlane ? 0.92 : 0.7 })
+          );
+          pe.rotation.set(rx, ry, 0);
+          pe.position.set(0, 0, topZ + zOff);
+          dynamicGroup.add(pe);
+        };
+        if (originVis.xy || pickingSketchPlane) {
+          makePlane(0, 0, 0, 0xf59e0b, "XY Top Plane (Z = 0.0 mm)", 0);
+        }
+        if (pickingSketchPlane) {
+          makePlane(0, 0, -job.thicknessMm, 0xfbbf24, `XY Floor Plane (Z = ${(-job.thicknessMm).toFixed(1)} mm)`, -job.thicknessMm);
+        }
+        if (originVis.xz || pickingSketchPlane) {
+          makePlane(Math.PI / 2, 0, 0, 0x38bdf8, "XZ Front Plane (Z = 0.0 mm)", 0);
+        }
+        if (originVis.yz || pickingSketchPlane) {
+          makePlane(0, Math.PI / 2, 0, 0x4ade80, "YZ Right Plane (Z = 0.0 mm)", 0);
+        }
+        // Make EVERY visible solid body's top face clickable in 3D when picking a sketch plane!
+        if (pickingSketchPlane) {
+          for (const body of effectiveSolidModels) {
+            if (!body.visible || body.suppressed || body.boolOp === "subtract") continue;
+            const faceZ = Number((body.zMm + body.heightMm * 0.5).toFixed(2));
+            const fg = new THREE.PlaneGeometry(body.widthMm, body.depthMm);
+            const fm = new THREE.MeshBasicMaterial({
+              color: 0x22c55e,
+              transparent: true,
+              opacity: 0.28,
+              side: THREE.DoubleSide,
+              depthWrite: false,
+            });
+            const fMesh = new THREE.Mesh(fg, fm);
+            fMesh.position.set(body.xMm, body.yMm, topZ + faceZ + 0.25);
+            fMesh.userData = {
+              isPickableSketchPlane: true,
+              sketchPlaneZ: faceZ,
+              sketchPlaneLabel: `${body.name} Top Face (Z = ${faceZ} mm)`,
+              baseColor: 0x22c55e,
+              baseOpacity: 0.28,
+            };
+            dynamicGroup.add(fMesh);
+            pickablePlanesRef.current.push(fMesh);
+            const fe = new THREE.LineSegments(
+              new THREE.EdgesGeometry(fg),
+              new THREE.LineBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.9 })
+            );
+            fe.position.set(body.xMm, body.yMm, topZ + faceZ + 0.26);
+            dynamicGroup.add(fe);
+          }
+        }
+      }
+
+      // Render user Construction Offset Planes (clickable when picking a Sketch Plane!)
+      for (const cp of constructionPlanes) {
+        if (!cp.visible && !pickingSketchPlane) continue;
+        const pg = new THREE.PlaneGeometry(job.widthMm * 0.85, job.depthMm * 0.85);
+        const pm = new THREE.MeshBasicMaterial({
+          color: 0xf59e0b,
+          transparent: true,
+          opacity: pickingSketchPlane ? 0.22 : 0.1,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        });
+        const meshP = new THREE.Mesh(pg, pm);
+        meshP.position.set(0, 0, topZ + cp.offsetMm);
+        meshP.userData = {
+          isPickableSketchPlane: pickingSketchPlane,
+          sketchPlaneZ: cp.offsetMm,
+          sketchPlaneLabel: `${cp.name} (Z = ${cp.offsetMm.toFixed(1)} mm)`,
+          baseColor: 0xf59e0b,
+          baseOpacity: pickingSketchPlane ? 0.22 : 0.1,
+        };
+        dynamicGroup.add(meshP);
+        if (pickingSketchPlane) pickablePlanesRef.current.push(meshP);
+        const pe = new THREE.LineSegments(new THREE.EdgesGeometry(pg), new THREE.LineBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.7 }));
+        pe.position.set(0, 0, topZ + cp.offsetMm);
+        dynamicGroup.add(pe);
+      }
+
       needsRenderRef.current = true;
       return;
     }
@@ -2431,10 +2741,14 @@ export default function App() {
     simTargetOverlay,
     simTargetOpacity,
     solidCsgGeo,
-    isModel3dView ? solidModels : null,
+    isModel3dView ? effectiveSolidModels : null,
     isModel3dView ? activeSolidId : "",
-    isModel3dView ? vectorShapes : null,
+    isModel3dView ? resolvedVectorShapes : null,
     isModel3dView ? activeVectorId : "",
+    isModel3dView ? fusionDialog : null,
+    isModel3dView ? originVis : null,
+    isModel3dView ? constructionPlanes : null,
+    isModel3dView ? showStockOverlay : false,
   ]);
 
   // 2b. Static / Semi-static 3D Overlays (Stock wire, Clamps, Axes, Grid, Toolpath lines)
@@ -2961,6 +3275,517 @@ export default function App() {
     setCustomTools((ct) => [...ct, created]);
     updateActiveOp({ toolNumber: nextNum, overrides: {} });
     setShowAddTool(false);
+  };
+
+  // ---------- Autodesk Fusion-Style Unified CAD Handlers ----------
+  const openCreateSolidDialog = (kind: SolidPrimitiveKind, defaultOp: BooleanOp, targetSketch?: VectorShape) => {
+    const isHole = kind === "hole";
+    const sk =
+      targetSketch ??
+      (kind === "extrude" || kind === "loft" || kind === "sweep"
+        ? vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0]
+        : undefined);
+    const extH = sk ? Math.max(1, sk.depthMm || 5) : 10;
+    const hVal = sk ? extH : isHole ? job.thicknessMm + 2 : 10;
+    const lbl = SOLID_KIND_LABELS[kind] ?? kind;
+    const draft: SolidModelNode = {
+      id: `solid-${Date.now()}`,
+      name: sk ? `${lbl} ${sk.name}` : `${lbl} ${solidModels.length + 1}`,
+      kind,
+      visible: true,
+      boolOp: solidModels.length === 0 ? "union" : defaultOp,
+      xMm: sk ? sk.xMm : 0,
+      yMm: sk ? sk.yMm : 0,
+      zMm: isHole
+        ? -job.thicknessMm * 0.5
+        : sk && sk.sketchZMm !== undefined
+        ? Number((sk.sketchZMm + (defaultOp === "subtract" ? -hVal * 0.5 : hVal * 0.5)).toFixed(2))
+        : snap3dToFloor
+        ? Number((-job.thicknessMm + hVal * 0.5).toFixed(2))
+        : 0,
+      widthMm: sk ? sk.widthMm : isHole ? 12 : 50,
+      depthMm: sk ? sk.heightMm : isHole ? 12 : 50,
+      heightMm: hVal,
+      rotXDeg: 0,
+      rotYDeg: 0,
+      rotZDeg: sk ? sk.rotationDeg : 0,
+      bevelMm: 0,
+      sketchId: sk?.id ?? vectorShapes[0]?.id,
+      wallThicknessMm: kind === "shell" ? 3 : kind === "sweep" ? 5 : undefined,
+      taperDeg: 0,
+      revolveDeg: 360,
+    };
+    setFusionDialog({
+      kind: "createSolid",
+      title: lbl,
+      draftSolid: draft,
+    });
+  };
+
+  const openEditSolidDialog = (node: SolidModelNode) => {
+    setActiveSolidId(node.id);
+    setFusionDialog({
+      kind: "editSolid",
+      title: `Edit ${SOLID_KIND_LABELS[node.kind] ?? node.kind}`,
+      draftSolid: { ...node, paramExprs: node.paramExprs ? { ...node.paramExprs } : undefined },
+      editingSolidId: node.id,
+    });
+  };
+
+  const insertStockBlank = () => {
+    const id = `solid-${Date.now()}`;
+    setSolidModels((ms) => [
+      {
+        id,
+        name: "Stock Blank",
+        kind: "box",
+        visible: true,
+        boolOp: "union",
+        xMm: 0,
+        yMm: 0,
+        zMm: -job.thicknessMm * 0.5,
+        widthMm: job.widthMm,
+        depthMm: job.depthMm,
+        heightMm: job.thicknessMm,
+        rotXDeg: 0,
+        rotYDeg: 0,
+        rotZDeg: 0,
+        bevelMm: 0,
+      },
+      ...ms,
+    ]);
+    setActiveSolidId(id);
+  };
+
+  const openMoveCopyDialog = () => {
+    const act = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
+    if (!act) return;
+    setFusionDialog({
+      kind: "moveCopy",
+      title: "Move / Copy",
+      draftSolid: { ...act },
+      origSolid: { ...act },
+      editingSolidId: act.id,
+      moveMode: "free",
+      moveDx: 0,
+      moveDy: 0,
+      moveDz: 0,
+      moveRx: 0,
+      moveRy: 0,
+      moveRz: 0,
+      moveCreateCopy: false,
+    });
+  };
+
+  const exportSolidToStl = async (node: SolidModelNode) => {
+    const geo = buildPrimitiveGeometry(resolveSolidNode(node, paramEnv), resolvedVectorShapes);
+    const buf = geometryToBinaryStl(geo);
+    geo.dispose();
+    const bytes = Array.from(new Uint8Array(buf));
+    const safeName = `${node.name.replace(/[^a-zA-Z0-9_-]/g, "_")}.stl`;
+    try {
+      const res = await invoke<string | null>("save_file_dialog_ipc", {
+        defaultName: safeName,
+        filterName: "STL 3D Mesh (*.stl)",
+        extension: "stl",
+        bytes,
+      });
+      if (res) setLastSavedMsg(`Exported Body STL: ${res}`);
+    } catch {
+      const blob = new Blob([buf], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = safeName;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  const applySketchConstraint = (kind: "concentric" | "equal" | "alignH" | "alignV") => {
+    const act = vectorShapes.find((s) => s.id === activeVectorId);
+    if (!act) return;
+    const ref = vectorShapes.find((s) => s.id !== act.id && s.visible) ?? null;
+    pushCadUndo();
+    setVectorShapes((vs) =>
+      vs.map((x) => {
+        if (x.id !== act.id) return x;
+        if (kind === "concentric") return { ...x, xMm: ref ? ref.xMm : 0, yMm: ref ? ref.yMm : 0 };
+        if (kind === "equal") return ref ? { ...x, widthMm: ref.widthMm, heightMm: ref.heightMm } : { ...x, heightMm: x.widthMm };
+        if (kind === "alignH") return { ...x, yMm: ref ? ref.yMm : 0 };
+        return { ...x, xMm: ref ? ref.xMm : 0 };
+      })
+    );
+  };
+
+  const projectActiveSolidToSketch = () => {
+    const act = resolvedSolidModels.find((m) => m.id === activeSolidId) ?? resolvedSolidModels[0];
+    if (!act) return;
+    pushCadUndo();
+    const id = `vec-${Date.now()}-proj`;
+    const isRound = act.kind === "cylinder" || act.kind === "hole" || act.kind === "pipe" || act.kind === "sphere" || act.kind === "torus";
+    setVectorShapes((vs) => [
+      ...vs,
+      {
+        id,
+        name: `Projected ${act.name}`,
+        kind: isRound ? "circle" : "rect",
+        visible: true,
+        construction: true,
+        xMm: act.xMm,
+        yMm: act.yMm,
+        widthMm: act.widthMm,
+        heightMm: act.depthMm,
+        rotationDeg: act.rotZDeg,
+        cornerRadiusMm: 0,
+        sides: 4,
+        depthMm: act.heightMm,
+        role: "cutout",
+        sketchZMm: sketchPlaneZMm,
+      },
+    ]);
+    setActiveVectorId(id);
+    setLastSavedMsg(`Projected ${act.name} onto sketch plane`);
+  };
+
+  const confirmFusionDialog = () => {
+    if (!fusionDialog) return;
+    pushCadUndo();
+    if (fusionDialog.kind === "createSolid" && fusionDialog.draftSolid) {
+      const created = fusionDialog.draftSolid;
+      setSolidModels((ms) => [...ms, created]);
+      setActiveSolidId(created.id);
+      setTimelineRollback(null);
+    } else if (fusionDialog.kind === "moveCopy" && fusionDialog.draftSolid) {
+      const moved = fusionDialog.draftSolid;
+      if (fusionDialog.moveCreateCopy) {
+        setSolidModels((ms) => [...ms, moved]);
+        setActiveSolidId(moved.id);
+      } else if (fusionDialog.editingSolidId) {
+        const eid = fusionDialog.editingSolidId;
+        setSolidModels((ms) => ms.map((x) => (x.id === eid ? moved : x)));
+      }
+    } else if (
+      (fusionDialog.kind === "editSolid" ||
+        fusionDialog.kind === "fillet" ||
+        fusionDialog.kind === "chamfer" ||
+        fusionDialog.kind === "scale") &&
+      fusionDialog.draftSolid &&
+      fusionDialog.editingSolidId
+    ) {
+      const updated = fusionDialog.draftSolid;
+      const eid = fusionDialog.editingSolidId;
+      setSolidModels((ms) => ms.map((x) => (x.id === eid ? updated : x)));
+    } else if (fusionDialog.kind === "align") {
+      const act = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
+      const tgt = solidModels.find((m) => m.id === fusionDialog.alignTargetId) ?? solidModels[0];
+      if (act) {
+        const mode = fusionDialog.alignMode ?? "floor";
+        setSolidModels((ms) =>
+          ms.map((x) => {
+            if (x.id !== act.id) return x;
+            if (mode === "floor") return { ...x, zMm: Number((-job.thicknessMm + x.heightMm * 0.5).toFixed(2)) };
+            if (mode === "centerXY") return { ...x, xMm: 0, yMm: 0 };
+            if (mode === "topOfTarget" && tgt && tgt.id !== act.id) {
+              return { ...x, zMm: Number((tgt.zMm + tgt.heightMm * 0.5 + x.heightMm * 0.5).toFixed(2)) };
+            }
+            if (mode === "centerOfTarget" && tgt && tgt.id !== act.id) {
+              return { ...x, xMm: tgt.xMm, yMm: tgt.yMm };
+            }
+            return x;
+          })
+        );
+      }
+    } else if (fusionDialog.kind === "combine") {
+      const toolId = fusionDialog.combineToolId || activeSolidId;
+      const op = fusionDialog.combineOp ?? "subtract";
+      setSolidModels((ms) => {
+        const tool = ms.find((x) => x.id === toolId);
+        if (!tool) return ms;
+        const updated = ms.map((x) => (x.id === toolId ? { ...x, boolOp: op } : x));
+        if (fusionDialog.combineKeepTools) {
+          return [...updated, { ...tool, id: `solid-${Date.now()}-kept`, name: `${tool.name} (Kept)`, boolOp: "union" }];
+        }
+        return updated;
+      });
+    } else if (fusionDialog.kind === "splitBody") {
+      const act = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
+      if (act) {
+        const ax = fusionDialog.splitAxis ?? "X";
+        const sp = fusionDialog.splitPosMm ?? 0;
+        const idB = `solid-${Date.now()}-splitB`;
+        setSolidModels((ms) => {
+          const out: SolidModelNode[] = [];
+          for (const m of ms) {
+            if (m.id !== act.id) {
+              out.push(m);
+              continue;
+            }
+            if (ax === "X") {
+              const half = Math.max(1, m.widthMm * 0.5);
+              out.push({ ...m, name: `${m.name} (Left)`, widthMm: half, xMm: Number((sp - half * 0.5 - 0.5).toFixed(2)) });
+              out.push({ ...m, id: idB, name: `${m.name} (Right)`, widthMm: half, xMm: Number((sp + half * 0.5 + 0.5).toFixed(2)) });
+            } else if (ax === "Y") {
+              const half = Math.max(1, m.depthMm * 0.5);
+              out.push({ ...m, name: `${m.name} (Front)`, depthMm: half, yMm: Number((sp - half * 0.5 - 0.5).toFixed(2)) });
+              out.push({ ...m, id: idB, name: `${m.name} (Back)`, depthMm: half, yMm: Number((sp + half * 0.5 + 0.5).toFixed(2)) });
+            } else {
+              const half = Math.max(1, m.heightMm * 0.5);
+              out.push({ ...m, name: `${m.name} (Bottom)`, heightMm: half, zMm: Number((m.zMm - half * 0.5).toFixed(2)) });
+              out.push({ ...m, id: idB, name: `${m.name} (Top)`, heightMm: half, zMm: Number((m.zMm + half * 0.5 + 0.5).toFixed(2)) });
+            }
+          }
+          return out;
+        });
+      }
+    } else if (fusionDialog.kind === "sketchPattern") {
+      const act = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
+      if (act) {
+        const copies: VectorShape[] = [];
+        if ((fusionDialog.sketchPatternType ?? "rect") === "rect") {
+          const cx = Math.max(1, fusionDialog.countX ?? 3);
+          const cy = Math.max(1, fusionDialog.countY ?? 2);
+          const sx = fusionDialog.spacingX ?? 20;
+          const sy = fusionDialog.spacingY ?? 20;
+          for (let ix = 0; ix < cx; ix++) {
+            for (let iy = 0; iy < cy; iy++) {
+              if (ix === 0 && iy === 0) continue;
+              copies.push({
+                ...act,
+                id: `vec-${Date.now()}-sp-${ix}-${iy}`,
+                name: `${act.name} (${ix + 1},${iy + 1})`,
+                xMm: Number((act.xMm + ix * sx).toFixed(2)),
+                yMm: Number((act.yMm + iy * sy).toFixed(2)),
+              });
+            }
+          }
+        } else {
+          const count = Math.max(2, fusionDialog.circCount ?? 6);
+          const r = Math.max(2, fusionDialog.circRadius ?? 25);
+          for (let i = 0; i < count; i++) {
+            const a = (i / count) * Math.PI * 2;
+            copies.push({
+              ...act,
+              id: `vec-${Date.now()}-scp-${i}`,
+              name: `${act.name} Bolt ${i + 1}`,
+              xMm: Number((Math.cos(a) * r).toFixed(2)),
+              yMm: Number((Math.sin(a) * r).toFixed(2)),
+            });
+          }
+        }
+        setVectorShapes((vs) => [...vs, ...copies]);
+      }
+    } else if (fusionDialog.kind === "sketchOffset") {
+      const act = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
+      if (act) {
+        const off = createOffsetVectorShape(act, fusionDialog.sketchOffsetMm ?? 2);
+        setVectorShapes((vs) => [...vs, off]);
+        setActiveVectorId(off.id);
+      }
+    } else if (fusionDialog.kind === "offsetPlane") {
+      const pl: ConstructionPlane = {
+        id: `plane-${Date.now()}`,
+        name: (fusionDialog.planeName || `Plane ${constructionPlanes.length + 1}`).trim(),
+        axis: fusionDialog.planeAxis ?? "XY",
+        offsetMm: fusionDialog.planeOffsetMm ?? 0,
+        visible: true,
+      };
+      setConstructionPlanes((ps) => [...ps, pl]);
+    } else if (fusionDialog.kind === "rectPattern") {
+      const act = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
+      if (act) {
+        const cx = Math.max(1, fusionDialog.countX ?? 3);
+        const cy = Math.max(1, fusionDialog.countY ?? 1);
+        const sx = fusionDialog.spacingX ?? 25;
+        const sy = fusionDialog.spacingY ?? 25;
+        const copies: SolidModelNode[] = [];
+        for (let ix = 0; ix < cx; ix++) {
+          for (let iy = 0; iy < cy; iy++) {
+            if (ix === 0 && iy === 0) continue;
+            copies.push({
+              ...act,
+              id: `solid-${Date.now()}-rp-${ix}-${iy}`,
+              name: `${act.name} (${ix + 1},${iy + 1})`,
+              xMm: Number((act.xMm + ix * sx).toFixed(2)),
+              yMm: Number((act.yMm + iy * sy).toFixed(2)),
+            });
+          }
+        }
+        setSolidModels((ms) => [...ms, ...copies]);
+      }
+    } else if (fusionDialog.kind === "circPattern") {
+      const act = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
+      if (act) {
+        const count = Math.max(2, fusionDialog.circCount ?? 6);
+        const r = Math.max(1, fusionDialog.circRadius ?? 30);
+        const baseAng = Math.atan2(act.yMm, act.xMm);
+        const copies: SolidModelNode[] = [];
+        for (let i = 1; i < count; i++) {
+          const a = baseAng + (i / count) * Math.PI * 2;
+          copies.push({
+            ...act,
+            id: `solid-${Date.now()}-cp-${i}`,
+            name: `${act.name} Circ${i}`,
+            xMm: Number((Math.cos(a) * r).toFixed(2)),
+            yMm: Number((Math.sin(a) * r).toFixed(2)),
+            rotZDeg: Number((act.rotZDeg + (i / count) * 360).toFixed(1)),
+          });
+        }
+        setSolidModels((ms) => [...ms, ...copies]);
+      }
+    } else if (fusionDialog.kind === "mirror") {
+      const act = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
+      if (act) {
+        const ax = fusionDialog.mirrorAxis ?? "X";
+        const id = `solid-${Date.now()}-mir`;
+        const copy: SolidModelNode =
+          ax === "X"
+            ? { ...act, id, name: `${act.name} MirX`, xMm: -act.xMm, rotYDeg: -act.rotYDeg, rotZDeg: -act.rotZDeg }
+            : { ...act, id, name: `${act.name} MirY`, yMm: -act.yMm, rotXDeg: -act.rotXDeg, rotZDeg: -act.rotZDeg };
+        setSolidModels((ms) => [...ms, copy]);
+        setActiveSolidId(id);
+      }
+    }
+    setFusionDialog(null);
+  };
+
+  const handleImportSvgSketch = async (file: File) => {
+    const txt = await file.text();
+    const parsed = parseSvgToVectorShapes(txt, job.widthMm, job.depthMm);
+    if (parsed.length > 0) {
+      setVectorShapes((vs) => [...vs, ...parsed]);
+      setActiveVectorId(parsed[0].id);
+      setLastSavedMsg(`Imported ${parsed.length} SVG sketch shape(s)`);
+    }
+  };
+
+  const handleImportDxfSketch = async (file: File) => {
+    const txt = await file.text();
+    const parsed = parseDxfToVectorShapes(txt, job.widthMm, job.depthMm);
+    if (parsed.length > 0) {
+      setVectorShapes((vs) => [...vs, ...parsed]);
+      setActiveVectorId(parsed[0].id);
+      setLastSavedMsg(`Imported ${parsed.length} DXF sketch shape(s)`);
+    }
+  };
+
+  const handleImportStlSolidFile = async (file: File) => {
+    const buf = await file.arrayBuffer();
+    const parsed = parseStlToPositions(buf);
+    if (parsed.positions.length < 9) {
+      setLastSavedMsg("No valid triangles found in STL file");
+      return;
+    }
+    pushCadUndo();
+    const id = `solid-${Date.now()}-stl`;
+    const fitScale = Math.min(1, (job.widthMm * 0.85) / parsed.widthMm, (job.depthMm * 0.85) / parsed.depthMm);
+    const w = Number((parsed.widthMm * fitScale).toFixed(1));
+    const d = Number((parsed.depthMm * fitScale).toFixed(1));
+    const h = Number((parsed.heightMm * fitScale).toFixed(1));
+    const node: SolidModelNode = {
+      id,
+      name: file.name.replace(/\.stl$/i, ""),
+      kind: "stlMesh",
+      visible: true,
+      boolOp: "union",
+      xMm: 0,
+      yMm: 0,
+      zMm: snap3dToFloor ? Number((-job.thicknessMm + h * 0.5).toFixed(2)) : 0,
+      widthMm: w,
+      depthMm: d,
+      heightMm: h,
+      rotXDeg: 0,
+      rotYDeg: 0,
+      rotZDeg: 0,
+      bevelMm: 0,
+      customStlPositions: parsed.positions,
+    };
+    setSolidModels((ms) => [...ms, node]);
+    setActiveSolidId(id);
+    setLastSavedMsg(`Imported STL Solid: ${node.name} (${w}×${d}×${h}mm)`);
+  };
+
+  const handleSendSolidToCam = () => {
+    const hasHoles = solidModels.some((m) => m.visible && !m.suppressed && m.kind === "hole");
+    const hasCuts = solidModels.some((m) => m.visible && !m.suppressed && m.boolOp === "subtract" && m.kind !== "hole");
+    const hasSolids = solidModels.some((m) => m.visible && !m.suppressed);
+    if (!hasSolids && vectorShapes.length === 0) {
+      setLastSavedMsg("Create a 3D Solid or Sketch first before sending to CAM");
+      return;
+    }
+    const baseOp = operations[0];
+    const nextOps: CamOperationItem[] = [];
+    if (hasHoles) {
+      nextOps.push({
+        id: `op-drill-${Date.now()}`,
+        name: "Auto: Peck Drilling (Solid Holes)",
+        enabled: true,
+        strategy: "Drilling",
+        toolNumber: baseOp?.toolNumber ?? 1,
+        overrides: {},
+        stockToLeaveMm: 0,
+        maxCutDepthMm: job.thicknessMm,
+        rampEnabled: false,
+        tabsEnabled: false,
+        tabCount: 0,
+        tabHeightMm: 0,
+        previewPts: [],
+      });
+    }
+    if (hasCuts) {
+      nextOps.push({
+        id: `op-pocket-${Date.now() + 1}`,
+        name: "Auto: 2D Adaptive Pocket (Cutouts)",
+        enabled: true,
+        strategy: "Adaptive2D",
+        toolNumber: baseOp?.toolNumber ?? 1,
+        overrides: {},
+        stockToLeaveMm: 0.2,
+        maxCutDepthMm: job.thicknessMm,
+        rampEnabled: true,
+        tabsEnabled: false,
+        tabCount: 0,
+        tabHeightMm: 0,
+        previewPts: [],
+      });
+    }
+    if (hasSolids) {
+      nextOps.push({
+        id: `op-rough-${Date.now() + 2}`,
+        name: "Auto: 3D Solid Roughing",
+        enabled: true,
+        strategy: "ReliefRough3D",
+        toolNumber: baseOp?.toolNumber ?? 1,
+        overrides: {},
+        stockToLeaveMm: 0.5,
+        maxCutDepthMm: job.thicknessMm,
+        rampEnabled: true,
+        tabsEnabled: false,
+        tabCount: 0,
+        tabHeightMm: 0,
+        previewPts: [],
+      });
+      nextOps.push({
+        id: `op-finish-${Date.now() + 3}`,
+        name: "Auto: 3D Solid Parallel Finish",
+        enabled: true,
+        strategy: "ReliefFinish3D",
+        toolNumber: baseOp?.toolNumber ?? 1,
+        overrides: {},
+        stockToLeaveMm: 0,
+        maxCutDepthMm: job.thicknessMm,
+        rampEnabled: false,
+        tabsEnabled: false,
+        tabCount: 0,
+        tabHeightMm: 0,
+        previewPts: [],
+      });
+    }
+    setEnable3dModelMode(true);
+    setOperations(nextOps);
+    setActiveOpId(nextOps[0].id);
+    setStep("toolpaths");
+    setLastSavedMsg(`Generated ${nextOps.length} CAM operation(s) from SOLID model`);
   };
 
   return (
@@ -3510,863 +4335,75 @@ export default function App() {
               </>
               )}
 
-              {designMode === "vector" && (
-                <>
-                  <div style={UI.pageHeader}>
-                    <h3 style={UI.pageTitle}>Vector Sketching (2D CAD)</h3>
-                    <div style={{ display: "flex", gap: 4 }}>
-                      <label style={{ ...UI.btnAccentSmall, display: "flex", alignItems: "center", gap: 4 }}>
-                        <DesignIcon name="svg" size={13} />
-                        <span>.SVG</span>
-                        <input
-                          type="file"
-                          accept=".svg"
-                          onChange={async (e) => {
-                            const f = e.target.files?.[0];
-                            if (!f) return;
-                            e.target.value = "";
-                            const txt = await f.text();
-                            const parsed = parseSvgToVectorShapes(txt, job.widthMm, job.depthMm);
-                            if (parsed.length > 0) {
-                              setVectorShapes((vs) => [...vs, ...parsed]);
-                              setActiveVectorId(parsed[0].id);
-                              setLastSavedMsg(`Imported ${parsed.length} SVG vector(s)`);
-                            }
-                          }}
-                          style={{ display: "none" }}
-                        />
-                      </label>
-                      <label style={{ ...UI.btnSecondary, display: "flex", alignItems: "center", gap: 4, padding: "5px 8px" }}>
-                        <DesignIcon name="vector" size={13} />
-                        <span>.DXF</span>
-                        <input
-                          type="file"
-                          accept=".dxf"
-                          onChange={async (e) => {
-                            const f = e.target.files?.[0];
-                            if (!f) return;
-                            e.target.value = "";
-                            const txt = await f.text();
-                            const parsed = parseDxfToVectorShapes(txt, job.widthMm, job.depthMm);
-                            if (parsed.length > 0) {
-                              setVectorShapes((vs) => [...vs, ...parsed]);
-                              setActiveVectorId(parsed[0].id);
-                              setLastSavedMsg(`Imported ${parsed.length} DXF vector(s)`);
-                            } else {
-                              setLastSavedMsg("No supported entities found in DXF");
-                            }
-                          }}
-                          style={{ display: "none" }}
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        disabled={vectorShapes.filter((s) => s.visible).length === 0}
-                        title="Export visible vector shapes as .DXF"
-                        onClick={async () => {
-                          const dxf = exportVectorShapesToDxf(vectorShapes);
-                          const bytes = Array.from(new TextEncoder().encode(dxf));
-                          try {
-                            const res = await invoke<string | null>("save_file_dialog_ipc", {
-                              defaultName: `${job.name}_vectors.dxf`,
-                              filterName: "DXF (*.dxf)",
-                              extension: "dxf",
-                              bytes,
-                            });
-                            if (res) setLastSavedMsg(`Exported DXF: ${res}`);
-                          } catch {
-                            const blob = new Blob([dxf], { type: "application/dxf" });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement("a");
-                            a.href = url;
-                            a.download = `${job.name}_vectors.dxf`;
-                            a.click();
-                            URL.revokeObjectURL(url);
-                          }
-                        }}
-                        style={{ ...UI.btnSecondary, padding: "5px 8px", fontSize: 11 }}
-                      >
-                        DXF ↓
-                      </button>
-                    </div>
-                  </div>
-
-                  <div style={UI.panel}>
-                    <span style={UI.sectionTitle}>TEXT & QUICK SHAPES</span>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
-                      <ToolTileButton
-                        icon="text"
-                        label="Text Box"
-                        onClick={() => {
-                          const t = textDraft.trim() || "HybridCAM";
-                          const id = `vec-${Date.now()}`;
-                          setVectorShapes((vs) => [
-                            ...vs,
-                            {
-                              id,
-                              name: `Text: ${t.slice(0, 14)}`,
-                              kind: "text",
-                              visible: true,
-                              xMm: 0,
-                              yMm: 0,
-                              widthMm: Math.min(job.widthMm * 0.6, Math.max(30, t.length * 10)),
-                              heightMm: 24,
-                              rotationDeg: 0,
-                              cornerRadiusMm: 0,
-                              sides: 4,
-                              text: t,
-                              depthMm: 3,
-                              role: "vcarve",
-                            },
-                          ]);
-                          setActiveVectorId(id);
-                        }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Vector Shape Stack */}
-                  <div style={UI.panel}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={UI.sectionTitle}>Sketch Shapes ({vectorShapes.length})</span>
-                      <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, cursor: "pointer" }}>
-                        <input type="checkbox" checked={snapToGrid} onChange={(e) => setSnapToGrid(e.target.checked)} />
-                        Snap 5mm
-                      </label>
-                    </div>
-                    {vectorShapes.length === 0 ? (
-                      <div style={{ fontSize: 12, color: "var(--hc-muted, #9ca3af)" }}>Pick a shape tool above and drag on the canvas to draw vectors.</div>
-                    ) : (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        {vectorShapes.map((sh) => (
-                          <div
-                            key={sh.id}
-                            onClick={() => setActiveVectorId(sh.id)}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              padding: "6px 8px",
-                              borderRadius: 6,
-                              cursor: "pointer",
-                              border: activeVectorId === sh.id ? "1px solid var(--hc-accent-secondary, #38bdf8)" : "1px solid var(--hc-border, #262c36)",
-                              background: activeVectorId === sh.id ? "color-mix(in srgb, var(--hc-accent, #2563eb) 24%, transparent)" : "var(--hc-subpanel-bg, #111419)",
-                              fontSize: 13,
-                            }}
-                          >
-                            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }} onClick={(e) => e.stopPropagation()}>
-                              <input
-                                type="checkbox"
-                                checked={sh.visible}
-                                onChange={(e) => setVectorShapes((vs) => vs.map((x) => (x.id === sh.id ? { ...x, visible: e.target.checked } : x)))}
-                              />
-                              <span style={{ fontWeight: 600 }}>{sh.name}</span>
-                            </label>
-                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                              <span style={{ fontSize: 11, color: "var(--hc-section-title, #93c5fd)", textTransform: "uppercase" }}>{sh.role}</span>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setVectorShapes((vs) => vs.filter((x) => x.id !== sh.id));
-                                }}
-                                style={{ background: "transparent", border: "none", color: "var(--hc-muted, #9ca3af)", cursor: "pointer" }}
-                              >
-                                ✕
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Active Vector Shape Properties */}
-                  {(() => {
-                    const activeVec = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
-                    if (!activeVec) return null;
-                    const patchVec = (patch: Partial<VectorShape>) =>
-                      setVectorShapes((vs) => vs.map((x) => (x.id === activeVec.id ? { ...x, ...patch } : x)));
-                    return (
-                      <div style={UI.panel}>
-                        <span style={UI.sectionTitle}>Edit: {activeVec.name}</span>
-                        <div>
-                          <label style={UI.label}>Toolpath Role</label>
-                          <select value={activeVec.role} onChange={(e) => patchVec({ role: e.target.value as VectorRole })} style={{ ...UI.input, marginTop: 3 }}>
-                            <option value="cutout">Cutout / Contour</option>
-                            <option value="carve">Pocket / Recessed Carve</option>
-                            <option value="vcarve">True V-Carve</option>
-                            <option value="model3d">Raised 3D Boss</option>
-                          </select>
-                        </div>
-                        <SliderRow label="X Center" unit="mm" min={-job.widthMm * 0.6} max={job.widthMm * 0.6} step={0.5} value={activeVec.xMm} onChange={(v) => patchVec({ xMm: v })} />
-                        <SliderRow label="Y Center" unit="mm" min={-job.depthMm * 0.6} max={job.depthMm * 0.6} step={0.5} value={activeVec.yMm} onChange={(v) => patchVec({ yMm: v })} />
-                        <SliderRow label="Width" unit="mm" min={2} max={job.widthMm} step={0.5} value={activeVec.widthMm} onChange={(v) => patchVec({ widthMm: v })} />
-                        <SliderRow label="Height" unit="mm" min={2} max={job.depthMm} step={0.5} value={activeVec.heightMm} onChange={(v) => patchVec({ heightMm: v })} />
-                        <SliderRow label="Rotation" unit="°" min={-180} max={180} step={1} value={activeVec.rotationDeg} onChange={(v) => patchVec({ rotationDeg: v })} />
-                        {activeVec.kind === "rect" && (
-                          <SliderRow label="Corner Radius" unit="mm" min={0} max={40} step={0.5} value={activeVec.cornerRadiusMm} onChange={(v) => patchVec({ cornerRadiusMm: v })} />
-                        )}
-                        {activeVec.kind === "polygon" && (
-                          <SliderRow label="Polygon Sides" min={3} max={16} step={1} value={activeVec.sides} onChange={(v) => patchVec({ sides: Math.round(v) })} />
-                        )}
-                        <SliderRow label="Depth / Height" unit="mm" min={0.5} max={job.thicknessMm} step={0.5} value={activeVec.depthMm} onChange={(v) => patchVec({ depthMm: v })} />
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 4, paddingTop: 4 }}>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const id = `vec-${Date.now()}`;
-                              setVectorShapes((vs) => [...vs, { ...activeVec, id, name: `${activeVec.name} +2mm`, widthMm: activeVec.widthMm + 4, heightMm: activeVec.heightMm + 4 }]);
-                              setActiveVectorId(id);
-                            }}
-                            style={{ ...UI.btnSecondary, fontSize: 10, padding: "5px 4px" }}
-                          >
-                            Offset +2
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const id = `vec-${Date.now()}`;
-                              setVectorShapes((vs) => [...vs, { ...activeVec, id, name: `${activeVec.name} -2mm`, widthMm: Math.max(2, activeVec.widthMm - 4), heightMm: Math.max(2, activeVec.heightMm - 4) }]);
-                              setActiveVectorId(id);
-                            }}
-                            style={{ ...UI.btnSecondary, fontSize: 10, padding: "5px 4px" }}
-                          >
-                            Offset -2
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const id = `vec-${Date.now()}`;
-                              setVectorShapes((vs) => [...vs, { ...activeVec, id, name: `${activeVec.name} Copy`, xMm: activeVec.xMm + 15 }]);
-                              setActiveVectorId(id);
-                            }}
-                            style={{ ...UI.btnSecondary, fontSize: 10, padding: "5px 4px" }}
-                          >
-                            Duplicate
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const stepX = Math.max(6, activeVec.widthMm + 6);
-                              const copies: VectorShape[] = [1, 2].map((k) => ({
-                                ...activeVec,
-                                id: `vec-${Date.now()}-${k}`,
-                                name: `${activeVec.name} #${k + 1}`,
-                                xMm: activeVec.xMm + stepX * k,
-                              }));
-                              setVectorShapes((vs) => [...vs, ...copies]);
-                            }}
-                            style={{ ...UI.btnSecondary, fontSize: 10, padding: "5px 4px" }}
-                          >
-                            Array ×3
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </>
+              {designMode !== "picture" && (
+                <FusionBrowserTree
+                  stock={{ widthMm: job.widthMm, depthMm: job.depthMm, thicknessMm: job.thicknessMm }}
+                  originVis={originVis}
+                  constructionPlanes={constructionPlanes}
+                  solidModels={solidModels}
+                  activeSolidId={activeSolidId}
+                  vectorShapes={vectorShapes}
+                  activeVectorId={activeVectorId}
+                  paramCount={userParams.length}
+                  onToggleOrigin={(patch) => setOriginVis((o) => ({ ...o, ...patch }))}
+                  onSetCameraPreset={setCameraPreset}
+                  onOpenParameters={() => setShowParamsModal(true)}
+                  onSelectSolid={(id) => setActiveSolidId(id)}
+                  onEditSolid={(node) => openEditSolidDialog(node)}
+                  onExportSolidStl={(node) => exportSolidToStl(node)}
+                  onToggleSolidVis={(id) =>
+                    setSolidModels((ms) => ms.map((x) => (x.id === id ? { ...x, visible: !x.visible } : x)))
+                  }
+                  onDeleteSolid={(id) =>
+                    setSolidModels((ms) => {
+                      const next = ms.filter((x) => x.id !== id);
+                      if (activeSolidId === id) setActiveSolidId(next[0]?.id ?? "");
+                      return next;
+                    })
+                  }
+                  onSelectSketch={(id) => setActiveVectorId(id)}
+                  onEditSketch={(sk) => {
+                    setActiveVectorId(sk.id);
+                    setSketchPlaneZMm(sk.sketchZMm ?? 0);
+                    setDesignMode("model3d");
+                    setIsSketchingIn3d(true);
+                  }}
+                  onExtrudeSketch={(sk) => {
+                    setDesignMode("model3d");
+                    setIsSketchingIn3d(false);
+                    openCreateSolidDialog("extrude", "union", sk);
+                  }}
+                  onToggleSketchVis={(id) =>
+                    setVectorShapes((vs) => vs.map((x) => (x.id === id ? { ...x, visible: !x.visible } : x)))
+                  }
+                  onDeleteSketch={(id) =>
+                    setVectorShapes((vs) => {
+                      const next = vs.filter((x) => x.id !== id);
+                      if (activeVectorId === id) setActiveVectorId(next[0]?.id ?? "");
+                      return next;
+                    })
+                  }
+                  onSketchOnPlane={(zMm) => {
+                    setSketchPlaneZMm(zMm);
+                    setSketchTool("rect");
+                    setDesignMode("model3d");
+                    setIsSketchingIn3d(true);
+                  }}
+                  onTogglePlaneVis={(id) =>
+                    setConstructionPlanes((ps) => ps.map((p) => (p.id === id ? { ...p, visible: !p.visible } : p)))
+                  }
+                  onDeletePlane={(id) => setConstructionPlanes((ps) => ps.filter((p) => p.id !== id))}
+                  onOpenOffsetPlaneDialog={() =>
+                    setFusionDialog({
+                      kind: "offsetPlane",
+                      title: "Offset Plane",
+                      planeAxis: "XY",
+                      planeOffsetMm: 0,
+                      planeName: `Plane ${constructionPlanes.length + 1}`,
+                    })
+                  }
+                />
               )}
-
-              {designMode === "model3d" && isSketchingIn3d && (
-                <>
-                  <div style={{ ...UI.pageHeader, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-                    <h3 style={{ ...UI.pageTitle, display: "flex", alignItems: "center", gap: 6 }}>
-                      <DesignIcon name="vector" size={16} />
-                      <span>SKETCH · Z={sketchPlaneZMm.toFixed(1)}mm</span>
-                    </h3>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const id = `vec-${Date.now()}`;
-                        setVectorShapes((vs) => [
-                          ...vs,
-                          {
-                            id,
-                            name: `Sketch Rect ${vs.length + 1}`,
-                            kind: "rect",
-                            visible: true,
-                            xMm: 0,
-                            yMm: 0,
-                            widthMm: 40,
-                            heightMm: 24,
-                            rotationDeg: 0,
-                            cornerRadiusMm: 0,
-                            sides: 4,
-                            depthMm: 5,
-                            role: "cutout",
-                            sketchZMm: sketchPlaneZMm,
-                          },
-                        ]);
-                        setActiveVectorId(id);
-                      }}
-                      style={{ ...UI.btnSecondary, fontSize: 11, padding: "4px 8px" }}
-                    >
-                      + Centered Rect
-                    </button>
-                  </div>
-
-                  {/* Sketch Profiles List */}
-                  <div style={UI.panel}>
-                    <span style={UI.sectionTitle}>SKETCH PROFILES ({vectorShapes.length})</span>
-                    {vectorShapes.length === 0 ? (
-                      <div style={{ fontSize: 12, color: "var(--hc-muted, #9ca3af)" }}>
-                        Pick a draw tool above and drag on the canvas, then click <b>Finish Sketch</b> to Extrude or Cut in 3D.
-                      </div>
-                    ) : (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        {vectorShapes.map((sh) => (
-                          <div
-                            key={sh.id}
-                            onClick={() => setActiveVectorId(sh.id)}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              padding: "6px 8px",
-                              borderRadius: 6,
-                              cursor: "pointer",
-                              border: activeVectorId === sh.id ? "1px solid var(--hc-accent-secondary, #38bdf8)" : "1px solid var(--hc-border, #262c36)",
-                              background: activeVectorId === sh.id ? "color-mix(in srgb, var(--hc-accent, #2563eb) 24%, transparent)" : "var(--hc-subpanel-bg, #111419)",
-                              fontSize: 12,
-                            }}
-                          >
-                            <span style={{ fontWeight: 600 }}>{sh.name}</span>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setVectorShapes((vs) => vs.filter((x) => x.id !== sh.id));
-                              }}
-                              style={{ background: "transparent", border: "none", color: "var(--hc-muted, #9ca3af)", cursor: "pointer" }}
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Active Sketch Dimensions & Quick Finish Actions */}
-                  {(() => {
-                    const activeVec = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
-                    if (!activeVec) return null;
-                    const patchVec = (patch: Partial<VectorShape>) =>
-                      setVectorShapes((vs) => vs.map((x) => (x.id === activeVec.id ? { ...x, ...patch } : x)));
-                    const finishAndExtrude = (op: BooleanOp) => {
-                      const extH = Math.max(1, activeVec.depthMm || 5);
-                      const id = `solid-${Date.now()}`;
-                      const node: SolidModelNode = {
-                        id,
-                        name: `${op === "subtract" ? "Cut" : "Extrude"} ${activeVec.name}`,
-                        kind: "extrude",
-                        visible: true,
-                        boolOp: solidModels.length === 0 ? "union" : op,
-                        xMm: activeVec.xMm,
-                        yMm: activeVec.yMm,
-                        zMm: op === "subtract" ? sketchPlaneZMm - extH * 0.5 : sketchPlaneZMm + extH * 0.5,
-                        widthMm: activeVec.widthMm,
-                        depthMm: activeVec.heightMm,
-                        heightMm: extH,
-                        rotXDeg: 0,
-                        rotYDeg: 0,
-                        rotZDeg: activeVec.rotationDeg,
-                        bevelMm: 0,
-                        sketchId: activeVec.id,
-                      };
-                      setSolidModels((ms) => [...ms, node]);
-                      setActiveSolidId(id);
-                      setIsSketchingIn3d(false);
-                    };
-                    return (
-                      <div style={UI.panel}>
-                        <span style={UI.sectionTitle}>DIMENSIONS · {activeVec.name}</span>
-                        <SliderRow label="X" unit="mm" min={-job.widthMm * 0.6} max={job.widthMm * 0.6} step={0.5} value={activeVec.xMm} onChange={(v) => patchVec({ xMm: v })} />
-                        <SliderRow label="Y" unit="mm" min={-job.depthMm * 0.6} max={job.depthMm * 0.6} step={0.5} value={activeVec.yMm} onChange={(v) => patchVec({ yMm: v })} />
-                        <SliderRow label="Width" unit="mm" min={2} max={job.widthMm} step={0.5} value={activeVec.widthMm} onChange={(v) => patchVec({ widthMm: v })} />
-                        <SliderRow label="Height" unit="mm" min={2} max={job.depthMm} step={0.5} value={activeVec.heightMm} onChange={(v) => patchVec({ heightMm: v })} />
-                        <SliderRow label="Extrude Depth" unit="mm" min={0.5} max={job.thicknessMm * 2} step={0.5} value={activeVec.depthMm} onChange={(v) => patchVec({ depthMm: v })} />
-                        {activeVec.kind === "rect" && (
-                          <SliderRow label="Corner Fillet" unit="mm" min={0} max={40} step={0.5} value={activeVec.cornerRadiusMm} onChange={(v) => patchVec({ cornerRadiusMm: v })} />
-                        )}
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, paddingTop: 4 }}>
-                          <button
-                            type="button"
-                            onClick={() => finishAndExtrude("union")}
-                            style={{ ...UI.btnAccentSmall, background: "#16a34a", padding: "8px 6px" }}
-                          >
-                            Finish &amp; Extrude
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => finishAndExtrude("subtract")}
-                            style={{ ...UI.btnSecondary, borderColor: "#7f1d1d", color: "#fca5a5", padding: "8px 6px" }}
-                          >
-                            Finish &amp; Cut
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </>
-              )}
-
-              {designMode === "model3d" && !isSketchingIn3d && (
-                <>
-                  <div style={{ ...UI.pageHeader, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-                    <h3 style={UI.pageTitle}>SOLID · 3D Modeler</h3>
-                  </div>
-
-                  {/* SKETCH PLANE & EXTRUDE */}
-                  <div style={UI.panel}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
-                      <span style={UI.sectionTitle}>SKETCH PLANE</span>
-                      <select
-                        value={sketchPlaneZMm}
-                        onChange={(e) => setSketchPlaneZMm(Number(e.target.value))}
-                        title="Select Sketch Plane Z"
-                        style={{ ...UI.input, width: "auto", padding: "3px 6px", fontSize: 11 }}
-                      >
-                        <option value={0}>Top of Stock (Z=0)</option>
-                        <option value={-job.thicknessMm * 0.5}>Mid Stock (Z={(-job.thicknessMm * 0.5).toFixed(1)})</option>
-                        {(() => {
-                          const act = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
-                          if (!act) return null;
-                          const faceZ = Number((act.zMm + act.heightMm * 0.5).toFixed(2));
-                          return <option value={faceZ}>{act.name} Top (Z={faceZ})</option>;
-                        })()}
-                      </select>
-                    </div>
-                    {vectorShapes.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const sk = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
-                          const extH = Math.max(1, sk.depthMm || 5);
-                          const sz = sk.sketchZMm ?? 0;
-                          const id = `solid-${Date.now()}`;
-                          const node: SolidModelNode = {
-                            id,
-                            name: `Extrude ${sk.name}`,
-                            kind: "extrude",
-                            visible: true,
-                            boolOp: solidModels.length === 0 ? "union" : "union",
-                            xMm: sk.xMm,
-                            yMm: sk.yMm,
-                            zMm: snap3dToFloor ? -job.thicknessMm + extH * 0.5 : sz + extH * 0.5,
-                            widthMm: sk.widthMm,
-                            depthMm: sk.heightMm,
-                            heightMm: extH,
-                            rotXDeg: 0,
-                            rotYDeg: 0,
-                            rotZDeg: sk.rotationDeg,
-                            bevelMm: 0,
-                            sketchId: sk.id,
-                          };
-                          setSolidModels((ms) => [...ms, node]);
-                          setActiveSolidId(id);
-                        }}
-                        style={{ ...UI.btnSecondary, fontSize: 11, color: "#4ade80" }}
-                      >
-                        Extrude Active Sketch
-                      </button>
-                    )}
-                  </div>
-
-                  {/* EXTRA PRIMITIVES */}
-                  <div style={UI.panel}>
-                    <span style={UI.sectionTitle}>MORE PRIMITIVES</span>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
-                      {(
-                        [
-                          ["torus", "Torus", "union", "torus"],
-                          ["wedge", "Wedge", "union", "wedge"],
-                        ] as [SolidPrimitiveKind, string, BooleanOp, DesignIconName][]
-                      ).map(([kind, lbl, defaultOp, ic]) => (
-                        <ToolTileButton
-                          key={kind}
-                          icon={ic}
-                          label={lbl}
-                          accent={defaultOp === "subtract" ? "red" : undefined}
-                          onClick={() => {
-                            const id = `solid-${Date.now()}`;
-                            const isHole = kind === "hole";
-                            const hVal = isHole ? job.thicknessMm + 2 : 10;
-                            const node: SolidModelNode = {
-                              id,
-                              name: `${lbl.replace(" (Cut)", "")} ${solidModels.length + 1}`,
-                              kind,
-                              visible: true,
-                              boolOp: solidModels.length === 0 ? "union" : defaultOp,
-                              xMm: 0,
-                              yMm: 0,
-                              zMm: isHole ? -job.thicknessMm * 0.5 : (snap3dToFloor ? -job.thicknessMm + hVal * 0.5 : 0),
-                              widthMm: isHole ? 12 : 50,
-                              depthMm: isHole ? 12 : 50,
-                              heightMm: hVal,
-                              rotXDeg: 0,
-                              rotYDeg: 0,
-                              rotZDeg: 0,
-                              bevelMm: 0,
-                              sketchId: vectorShapes[0]?.id,
-                            };
-                            setSolidModels((ms) => [...ms, node]);
-                            setActiveSolidId(id);
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* MODIFY Toolbar */}
-                  {(() => {
-                    const activeSolid = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
-                    if (!activeSolid) return null;
-                    const patchSolid = (patch: Partial<SolidModelNode>) =>
-                      setSolidModels((ms) => ms.map((x) => (x.id === activeSolid.id ? { ...x, ...patch } : x)));
-                    const cloneWith = (suffix: string, patch: Partial<SolidModelNode>) => {
-                      const id = `solid-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-                      const copy: SolidModelNode = { ...activeSolid, id, name: `${activeSolid.name} ${suffix}`, ...patch };
-                      setSolidModels((ms) => [...ms, copy]);
-                      setActiveSolidId(id);
-                    };
-                    return (
-                      <div style={UI.panel}>
-                        <span style={UI.sectionTitle}>MODIFY · {activeSolid.name}</span>
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
-                          <ToolTileButton
-                            icon="push"
-                            label="Push -2mm"
-                            title="Press/Pull -2mm Height"
-                            onClick={() => patchSolid({ heightMm: Math.max(1, activeSolid.heightMm - 2) })}
-                          />
-                          <ToolTileButton
-                            icon="duplicate"
-                            label="Duplicate"
-                            title="Duplicate selected feature"
-                            onClick={() => cloneWith("Copy", { xMm: activeSolid.xMm + 15 })}
-                          />
-                          <ToolTileButton
-                            icon="mirrorY"
-                            label="Mirror Y"
-                            title="Mirror across Y=0"
-                            onClick={() => cloneWith("MirY", { yMm: -activeSolid.yMm, rotXDeg: -activeSolid.rotXDeg, rotZDeg: -activeSolid.rotZDeg })}
-                          />
-                          <ToolTileButton
-                            icon="pattern"
-                            label="Pattern ×3"
-                            title="Linear Pattern ×3 along X"
-                            onClick={() => {
-                              const stepX = Math.max(8, activeSolid.widthMm + 6);
-                              const copies: SolidModelNode[] = [1, 2].map((k) => ({
-                                ...activeSolid,
-                                id: `solid-${Date.now()}-${k}`,
-                                name: `${activeSolid.name} #${k + 1}`,
-                                xMm: activeSolid.xMm + stepX * k,
-                              }));
-                              setSolidModels((ms) => [...ms, ...copies]);
-                            }}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* BROWSER & FEATURE TIMELINE */}
-                  <div style={UI.panel}>
-                    <span style={UI.sectionTitle}>BROWSER &amp; TIMELINE ({solidModels.length})</span>
-                    {solidModels.length === 0 ? (
-                      <div style={{ fontSize: 12, color: "var(--hc-muted, #9ca3af)" }}>
-                        Click <b>+ Stock Blank</b> or pick a <b>CREATE</b> tool to start modeling.
-                      </div>
-                    ) : (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        {solidModels.map((m, idx) => (
-                          <div
-                            key={m.id}
-                            onClick={() => setActiveSolidId(m.id)}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              padding: "6px 8px",
-                              borderRadius: 6,
-                              cursor: "pointer",
-                              border: activeSolidId === m.id ? "1px solid var(--hc-accent-secondary, #38bdf8)" : "1px solid var(--hc-border, #262c36)",
-                              background: activeSolidId === m.id ? "color-mix(in srgb, var(--hc-accent, #2563eb) 24%, transparent)" : "var(--hc-subpanel-bg, #111419)",
-                              fontSize: 12,
-                              opacity: m.visible ? 1 : 0.55,
-                            }}
-                          >
-                            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", minWidth: 0 }} onClick={(e) => e.stopPropagation()}>
-                              <input
-                                type="checkbox"
-                                checked={m.visible}
-                                onChange={(e) => setSolidModels((ms) => ms.map((x) => (x.id === m.id ? { ...x, visible: e.target.checked } : x)))}
-                              />
-                              <DesignIcon
-                                name={
-                                  m.kind === "cone"
-                                    ? "wedge"
-                                    : m.kind === "loft"
-                                    ? "extrude"
-                                    : m.kind === "sweep"
-                                    ? "pipe"
-                                    : m.kind === "shell"
-                                    ? "box"
-                                    : m.kind
-                                }
-                                size={14}
-                                color="var(--hc-section-title, #93c5fd)"
-                              />
-                              <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</span>
-                            </label>
-                            <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
-                              <span
-                                style={{
-                                  fontSize: 10,
-                                  padding: "1px 5px",
-                                  borderRadius: 4,
-                                  background: "#0f172a",
-                                  color: idx === 0 ? "var(--hc-section-title, #93c5fd)" : m.boolOp === "subtract" ? "#f87171" : m.boolOp === "intersect" ? "#fbbf24" : "#4ade80",
-                                  fontWeight: 700,
-                                }}
-                              >
-                                {idx === 0 ? "Base" : m.boolOp === "subtract" ? "Cut" : m.boolOp === "intersect" ? "Intersect" : "Join"}
-                              </span>
-                              <button
-                                disabled={idx === 0}
-                                onClick={() =>
-                                  setSolidModels((ms) => {
-                                    if (idx <= 0) return ms;
-                                    const next = [...ms];
-                                    [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
-                                    return next;
-                                  })
-                                }
-                                title="Move earlier in timeline"
-                                style={{ background: "transparent", border: "none", color: idx === 0 ? "var(--hc-border-strong, #374151)" : "var(--hc-muted, #9ca3af)", cursor: idx === 0 ? "default" : "pointer", padding: "0 2px" }}
-                              >
-                                ▲
-                              </button>
-                              <button
-                                disabled={idx === solidModels.length - 1}
-                                onClick={() =>
-                                  setSolidModels((ms) => {
-                                    if (idx >= ms.length - 1) return ms;
-                                    const next = [...ms];
-                                    [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
-                                    return next;
-                                  })
-                                }
-                                title="Move later in timeline"
-                                style={{ background: "transparent", border: "none", color: idx === solidModels.length - 1 ? "var(--hc-border-strong, #374151)" : "var(--hc-muted, #9ca3af)", cursor: idx === solidModels.length - 1 ? "default" : "pointer", padding: "0 2px" }}
-                              >
-                                ▼
-                              </button>
-                              <button
-                                onClick={() => setSolidModels((ms) => ms.filter((x) => x.id !== m.id))}
-                                title="Delete feature"
-                                style={{ background: "transparent", border: "none", color: "var(--hc-muted, #9ca3af)", cursor: "pointer", padding: "0 2px" }}
-                              >
-                                ✕
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* SKETCHES BROWSER (Fusion Browser Tree) */}
-                  <div style={UI.panel}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={UI.sectionTitle}>SKETCHES ({vectorShapes.length})</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSketchTool("rect");
-                          setIsSketchingIn3d(true);
-                        }}
-                        style={{ ...UI.btnSecondary, fontSize: 10, padding: "2px 7px" }}
-                      >
-                        + New
-                      </button>
-                    </div>
-                    {vectorShapes.length === 0 ? (
-                      <div style={{ fontSize: 11, color: "var(--hc-muted, #94a3b8)" }}>No sketches yet. Click + Create Sketch (K).</div>
-                    ) : (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        {vectorShapes.map((sk) => (
-                          <div
-                            key={sk.id}
-                            onClick={() => setActiveVectorId(sk.id)}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              padding: "4px 7px",
-                              borderRadius: 6,
-                              cursor: "pointer",
-                              border: activeVectorId === sk.id ? "1px solid var(--hc-accent-secondary, #38bdf8)" : "1px solid var(--hc-border, #262c36)",
-                              background: "var(--hc-subpanel-bg, #111419)",
-                              fontSize: 11,
-                            }}
-                          >
-                            <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {sk.name}
-                            </span>
-                            <div style={{ display: "flex", gap: 4 }} onClick={(e) => e.stopPropagation()}>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setActiveVectorId(sk.id);
-                                  setSketchPlaneZMm(sk.sketchZMm ?? 0);
-                                  setIsSketchingIn3d(true);
-                                }}
-                                style={{ ...UI.btnSecondary, fontSize: 10, padding: "2px 6px" }}
-                              >
-                                Edit
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setVectorShapes((vs) => {
-                                    const next = vs.filter((x) => x.id !== sk.id);
-                                    if (activeVectorId === sk.id) setActiveVectorId(next[0]?.id ?? "");
-                                    return next;
-                                  });
-                                }}
-                                style={{ background: "transparent", border: "none", color: "#f87171", cursor: "pointer", padding: "0 3px" }}
-                              >
-                                ✕
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* PARAMETRIC FEATURE INSPECTOR */}
-                  {(() => {
-                    const activeSolid = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
-                    if (!activeSolid) return null;
-                    const resolvedSolid = resolvedSolidModels.find((m) => m.id === activeSolid.id) ?? activeSolid;
-                    const patchSolid = (patch: Partial<SolidModelNode>) =>
-                      setSolidModels((ms) => ms.map((x) => (x.id === activeSolid.id ? { ...x, ...patch } : x)));
-                    const patchParam = (field: keyof SolidModelNode, numVal: number, expr?: string) => {
-                      const nextExprs = { ...(activeSolid.paramExprs ?? {}) };
-                      if (expr) nextExprs[field] = expr;
-                      else delete nextExprs[field];
-                      patchSolid({ [field]: numVal, paramExprs: Object.keys(nextExprs).length ? nextExprs : undefined } as Partial<SolidModelNode>);
-                    };
-                    return (
-                      <div style={UI.panel}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                          <span style={UI.sectionTitle}>PARAMETRIC · {activeSolid.name}</span>
-                          <button
-                            type="button"
-                            onClick={() => setShowParamsModal(true)}
-                            style={{ ...UI.btnSecondary, fontSize: 10, padding: "2px 6px", color: "var(--hc-accent-secondary, #38bdf8)" }}
-                          >
-                            fx Params
-                          </button>
-                        </div>
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
-                          {(
-                            [
-                              ["union", "Join", "union", "green"],
-                              ["subtract", "Cut", "subtract", "red"],
-                              ["intersect", "Intersect", "intersect", "amber"],
-                            ] as [BooleanOp, string, DesignIconName, "green" | "red" | "amber"][]
-                          ).map(([op, lbl, ic, acc]) => (
-                            <ToolTileButton
-                              key={op}
-                              icon={ic}
-                              label={lbl}
-                              accent={acc}
-                              active={activeSolid.boolOp === op}
-                              onClick={() => patchSolid({ boolOp: op })}
-                            />
-                          ))}
-                        </div>
-                        {(activeSolid.kind === "extrude" || activeSolid.kind === "loft" || activeSolid.kind === "sweep") && vectorShapes.length > 0 && (
-                          <div>
-                            <label style={UI.label}>{activeSolid.kind === "loft" ? "Bottom Sketch" : activeSolid.kind === "sweep" ? "Path Sketch" : "Profile Sketch"}</label>
-                            <select value={activeSolid.sketchId ?? ""} onChange={(e) => patchSolid({ sketchId: e.target.value })} style={{ ...UI.input, marginTop: 3 }}>
-                              {vectorShapes.map((vs) => (
-                                <option key={vs.id} value={vs.id}>{vs.name}</option>
-                              ))}
-                            </select>
-                          </div>
-                        )}
-                        {activeSolid.kind === "loft" && vectorShapes.length > 1 && (
-                          <div>
-                            <label style={UI.label}>Top Sketch (Optional)</label>
-                            <select value={activeSolid.sketchId2 ?? ""} onChange={(e) => patchSolid({ sketchId2: e.target.value || undefined })} style={{ ...UI.input, marginTop: 3 }}>
-                              <option value="">Auto-tapered Circle</option>
-                              {vectorShapes.map((vs) => (
-                                <option key={vs.id} value={vs.id}>{vs.name}</option>
-                              ))}
-                            </select>
-                          </div>
-                        )}
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
-                          <ParamInput label="W (X)" value={resolvedSolid.widthMm} expr={activeSolid.paramExprs?.widthMm} env={paramEnv} onChange={(v, ex) => patchParam("widthMm", Math.max(0.5, v), ex)} />
-                          <ParamInput label="D (Y)" value={resolvedSolid.depthMm} expr={activeSolid.paramExprs?.depthMm} env={paramEnv} onChange={(v, ex) => patchParam("depthMm", Math.max(0.5, v), ex)} />
-                          <ParamInput label="H (Z)" value={resolvedSolid.heightMm} expr={activeSolid.paramExprs?.heightMm} env={paramEnv} onChange={(v, ex) => patchParam("heightMm", Math.max(0.5, v), ex)} />
-                          <ParamInput label="Pos X" value={resolvedSolid.xMm} expr={activeSolid.paramExprs?.xMm} env={paramEnv} onChange={(v, ex) => patchParam("xMm", v, ex)} />
-                          <ParamInput label="Pos Y" value={resolvedSolid.yMm} expr={activeSolid.paramExprs?.yMm} env={paramEnv} onChange={(v, ex) => patchParam("yMm", v, ex)} />
-                          <ParamInput label="Pos Z" value={resolvedSolid.zMm} expr={activeSolid.paramExprs?.zMm} env={paramEnv} onChange={(v, ex) => patchParam("zMm", v, ex)} />
-                        </div>
-                        {(activeSolid.kind === "shell" || activeSolid.kind === "sweep") && (
-                          <ParamInput
-                            label={activeSolid.kind === "shell" ? "Wall Thickness (mm)" : "Sweep Tube Diameter (mm)"}
-                            value={resolvedSolid.wallThicknessMm ?? 3}
-                            expr={activeSolid.paramExprs?.wallThicknessMm}
-                            env={paramEnv}
-                            onChange={(v, ex) => patchParam("wallThicknessMm", Math.max(0.5, v), ex)}
-                          />
-                        )}
-                        {(activeSolid.kind === "extrude" || activeSolid.kind === "loft") && (
-                          <ParamInput
-                            label="Taper / Draft Angle"
-                            unit="°"
-                            value={resolvedSolid.taperDeg ?? 0}
-                            expr={activeSolid.paramExprs?.taperDeg}
-                            env={paramEnv}
-                            onChange={(v, ex) => patchParam("taperDeg", Math.max(-45, Math.min(45, v)), ex)}
-                          />
-                        )}
-                        {activeSolid.kind === "revolve" && (
-                          <ParamInput
-                            label="Revolve Angle"
-                            unit="°"
-                            value={resolvedSolid.revolveDeg ?? 360}
-                            expr={activeSolid.paramExprs?.revolveDeg}
-                            env={paramEnv}
-                            onChange={(v, ex) => patchParam("revolveDeg", Math.max(15, Math.min(360, v)), ex)}
-                          />
-                        )}
-                        <SliderRow label="Rotate X" unit="°" min={-180} max={180} step={5} value={activeSolid.rotXDeg} onChange={(v) => patchSolid({ rotXDeg: v })} />
-                        <SliderRow label="Rotate Y" unit="°" min={-180} max={180} step={5} value={activeSolid.rotYDeg} onChange={(v) => patchSolid({ rotYDeg: v })} />
-                        <SliderRow label="Rotate Z" unit="°" min={-180} max={180} step={5} value={activeSolid.rotZDeg} onChange={(v) => patchSolid({ rotZDeg: v })} />
-                        {(activeSolid.kind === "box" || activeSolid.kind === "extrude" || activeSolid.kind === "pipe") && (
-                          <ParamInput
-                            label="Fillet / Chamfer"
-                            value={resolvedSolid.bevelMm}
-                            expr={activeSolid.paramExprs?.bevelMm}
-                            env={paramEnv}
-                            onChange={(v, ex) => patchParam("bevelMm", Math.max(0, v), ex)}
-                          />
-                        )}
-                      </div>
-                    );
-                  })()}
-                </>
-              )}
-
               <button onClick={() => setStep("relief")} style={UI.btnPrimary}>
                 Next: 3D Relief Settings →
               </button>
@@ -6689,7 +6726,7 @@ export default function App() {
               }
             />
           )}
-          {step === "layout" && (designMode === "vector" || (designMode === "model3d" && isSketchingIn3d)) && (
+          {step === "layout" && designMode === "model3d" && isSketchingIn3d && (
             <VectorSketchView
               job={job}
               shapes={resolvedVectorShapes}
@@ -6697,666 +6734,381 @@ export default function App() {
               toolMode={sketchTool}
               snapToGrid={snapToGrid}
               snapStepMm={snapStepMm}
+              showDimensions={showSketchDims}
               sketchPlaneLabel={isSketchingIn3d ? `Sketch Plane Z = ${sketchPlaneZMm.toFixed(1)}mm` : undefined}
+              referenceBodies={effectiveSolidModels
+                .filter((m) => m.visible && !m.suppressed && m.boolOp !== "subtract")
+                .map((m) => ({
+                  xMm: m.xMm,
+                  yMm: m.yMm,
+                  widthMm: m.widthMm,
+                  depthMm: m.depthMm,
+                  isRound: m.kind === "cylinder" || m.kind === "sphere" || m.kind === "pipe" || m.kind === "torus",
+                  name: m.name,
+                }))}
               onSelectShape={setActiveVectorId}
               onAddShape={(s) => {
                 const tagged = isSketchingIn3d ? { ...s, sketchZMm: sketchPlaneZMm } : s;
                 setVectorShapes((vs) => [...vs, tagged]);
                 setActiveVectorId(tagged.id);
+                setSketchTool("select");
               }}
               onUpdateShape={(id, patch) =>
                 setVectorShapes((vs) => vs.map((x) => (x.id === id ? { ...x, ...patch } : x)))
               }
+              onDeleteShape={(id) => {
+                pushCadUndo();
+                setVectorShapes((vs) => {
+                  const next = vs.filter((x) => x.id !== id);
+                  if (activeVectorId === id) setActiveVectorId(next[0]?.id ?? "");
+                  return next;
+                });
+              }}
+              onSketchContextMenu={(x, y) => setContextMenu({ x, y, mode: "sketch" })}
             />
           )}
-          {step === "layout" && (() => {
-            const activeSolid = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
-            const addSolidQuick = (kind: SolidPrimitiveKind, lbl: string, defaultOp: BooleanOp) => {
-              const id = `solid-${Date.now()}`;
-              const isHole = kind === "hole";
-              const sk = kind === "extrude" ? (vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0]) : undefined;
-              const extH = sk ? Math.max(1, sk.depthMm || 5) : 10;
-              const hVal = sk ? extH : (isHole ? job.thicknessMm + 2 : 10);
-              const node: SolidModelNode = {
-                id,
-                name: sk ? `Extrude ${sk.name}` : `${lbl} ${solidModels.length + 1}`,
-                kind,
-                visible: true,
-                boolOp: solidModels.length === 0 ? "union" : defaultOp,
-                xMm: sk ? sk.xMm : 0,
-                yMm: sk ? sk.yMm : 0,
-                zMm: isHole
-                  ? -job.thicknessMm * 0.5
-                  : snap3dToFloor
-                  ? -job.thicknessMm + hVal * 0.5
-                  : sk
-                  ? (sk.sketchZMm ?? 0) + hVal * 0.5
-                  : 0,
-                widthMm: sk ? sk.widthMm : (isHole ? 12 : 50),
-                depthMm: sk ? sk.heightMm : (isHole ? 12 : 50),
-                heightMm: hVal,
-                rotXDeg: 0,
-                rotYDeg: 0,
-                rotZDeg: sk ? sk.rotationDeg : 0,
-                bevelMm: 0,
-                sketchId: sk?.id ?? vectorShapes[0]?.id,
-              };
-              setSolidModels((ms) => [...ms, node]);
-              setActiveSolidId(id);
-            };
-            const ribbonBtn = (active: boolean, danger?: boolean): React.CSSProperties => ({
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-              padding: "4px 8px",
-              borderRadius: 6,
-              border: `1px solid ${active ? "var(--hc-accent, #3b82f6)" : "transparent"}`,
-              background: active ? "var(--hc-accent, #2563eb)" : "rgba(30, 41, 59, 0.55)",
-              color: active ? "#fff" : danger ? "#fca5a5" : "#cbd5e1",
-              fontSize: 11,
-              fontWeight: 600,
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-            });
-            const groupBox: React.CSSProperties = {
-              display: "flex",
-              flexDirection: "column",
-              gap: 3,
-              paddingRight: 8,
-              borderRight: "1px solid rgba(71, 85, 105, 0.55)",
-            };
-            const groupLbl: React.CSSProperties = {
-              fontSize: 9,
-              fontWeight: 700,
-              letterSpacing: "0.08em",
-              color: "#64748b",
-              textTransform: "uppercase",
-              paddingLeft: 2,
-            };
-            return (
-              <div
-                style={{
-                  position: "absolute",
-                  top: 12,
-                  left: 14,
-                  zIndex: 25,
-                  maxWidth: "calc(100% - 250px)",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 6,
-                  padding: "7px 10px",
-                  borderRadius: 11,
-                  background: "rgba(15, 20, 28, 0.92)",
-                  backdropFilter: "blur(10px)",
-                  border: "1px solid var(--hc-border-strong, #334155)",
-                  boxShadow: "0 10px 28px rgba(0,0,0,0.45)",
-                }}
-              >
-                {/* Top Row: Unified Photo | Design (CAD) + Include Toggles + fx Parameters */}
-                <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                  <div style={{ display: "flex", gap: 3, background: "#0b0e14", padding: 3, borderRadius: 8, border: "1px solid #1e293b" }}>
-                    {(
-                      [
-                        ["picture", "Photo", "picture"],
-                        ["model3d", "Design (CAD)", "model3d"],
-                      ] as [DesignMode, string, DesignIconName][]
-                    ).map(([m, lbl, ic]) => {
-                      const isActive = m === "picture" ? designMode === "picture" : designMode !== "picture";
-                      return (
-                        <button
-                          key={m}
-                          type="button"
-                          onClick={() => {
-                            setDesignMode(m);
-                            if (m === "picture") setIsSketchingIn3d(false);
-                          }}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 5,
-                            padding: "5px 12px",
-                            borderRadius: 6,
-                            border: "none",
-                            fontSize: 12,
-                            fontWeight: 700,
-                            cursor: "pointer",
-                            background: isActive ? "var(--hc-accent, #2563eb)" : "transparent",
-                            color: isActive ? "#fff" : "#94a3b8",
-                          }}
-                        >
-                          <DesignIcon name={ic} size={14} />
-                          <span>{lbl}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  <div style={{ width: 1, height: 20, background: "rgba(71, 85, 105, 0.55)" }} />
-
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: "#94a3b8" }}>
-                    <span style={{ fontWeight: 700, color: "#64748b", fontSize: 10, letterSpacing: "0.06em" }}>INCLUDE</span>
-                    <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", color: enablePictureMode ? "#e2e8f0" : "#64748b" }}>
-                      <input type="checkbox" checked={enablePictureMode} onChange={(e) => setEnablePictureMode(e.target.checked)} />
-                      Photo
-                    </label>
-                    <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", color: enableVectorMode ? "#e2e8f0" : "#64748b" }}>
-                      <input type="checkbox" checked={enableVectorMode} onChange={(e) => setEnableVectorMode(e.target.checked)} />
-                      Sketch
-                    </label>
-                    <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", color: enable3dModelMode ? "#e2e8f0" : "#64748b" }}>
-                      <input type="checkbox" checked={enable3dModelMode} onChange={(e) => setEnable3dModelMode(e.target.checked)} />
-                      3D
-                    </label>
-                  </div>
-
-                  {designMode !== "picture" && (
-                    <>
-                      <div style={{ width: 1, height: 20, background: "rgba(71, 85, 105, 0.55)" }} />
-                      <button
-                        type="button"
-                        title="Open Parametric Equations (Change Parameters)"
-                        onClick={() => setShowParamsModal(true)}
-                        style={{
-                          ...ribbonBtn(false),
-                          borderColor: "var(--hc-accent-secondary, #38bdf8)",
-                          color: "var(--hc-accent-secondary, #38bdf8)",
-                        }}
-                      >
-                        <span style={{ fontFamily: "Georgia, serif", fontStyle: "italic", fontWeight: 800 }}>fx</span>
-                        <span>Parameters ({userParams.length})</span>
-                      </button>
-                    </>
-                  )}
-                </div>
-
-                {/* Bottom Row: Fusion-Style Grouped Quick Tools */}
-                <div style={{ display: "flex", alignItems: "stretch", flexWrap: "wrap", gap: 8, paddingTop: 4, borderTop: "1px solid rgba(51, 65, 85, 0.5)" }}>
-                  {designMode === "picture" && (
-                    <>
-                      <div style={groupBox}>
-                        <span style={groupLbl}>Tools</span>
-                        <div style={{ display: "flex", gap: 4 }}>
-                          {(
-                            [
-                              ["move", "Move", "move"],
-                              ["paintRaise", "Raise +", "paintRaise"],
-                              ["paintLower", "Lower -", "paintLower"],
-                              ["paintSmooth", "Smooth", "paintSmooth"],
-                            ] as [LayoutToolMode, string, DesignIconName][]
-                          ).map(([m, lbl, ic]) => (
-                            <button key={m} type="button" onClick={() => setToolMode(m)} style={ribbonBtn(toolMode === m)}>
-                              <DesignIcon name={ic} size={13} />
-                              <span>{lbl}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div style={{ ...groupBox, borderRight: "none", paddingRight: 0 }}>
-                        <span style={groupLbl}>Align & Edit</span>
-                        <div style={{ display: "flex", gap: 4 }}>
-                          <button type="button" title="Center X" onClick={() => { pushUndoSnapshot(); updateActivePlacement((p) => ({ ...p, offsetXMm: 0 })); }} style={ribbonBtn(false)}>
-                            <DesignIcon name="centerX" size={13} />
-                            <span>Center X</span>
-                          </button>
-                          <button type="button" title="Center Y" onClick={() => { pushUndoSnapshot(); updateActivePlacement((p) => ({ ...p, offsetYMm: 0 })); }} style={ribbonBtn(false)}>
-                            <DesignIcon name="centerY" size={13} />
-                            <span>Center Y</span>
-                          </button>
-                          {activeLayer && (
-                            <button
-                              type="button"
-                              title="Delete selected layer (Del)"
-                              onClick={() => {
-                                pushUndoSnapshot();
-                                setLayers((ls) => {
-                                  const next = ls.filter((l) => l.id !== activeLayer.id);
-                                  setActiveLayerId(next[0]?.id ?? "");
-                                  return next;
-                                });
-                              }}
-                              style={ribbonBtn(false, true)}
-                            >
-                              <span>Delete</span>
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </>
-                  )}
-
-                  {(designMode === "vector" || (designMode === "model3d" && isSketchingIn3d)) && (() => {
-                    const activeSk = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
-                    return (
-                      <>
-                        <div style={groupBox}>
-                          <span style={groupLbl}>Create Sketch</span>
-                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                            {(
-                              [
-                                ["select", "Select", "select"],
-                                ["rect", "Rect", "rect"],
-                                ["circle", "Circle", "circle"],
-                                ["slot", "Slot", "rect"],
-                                ["polygon", "Polygon", "polygon"],
-                                ["polyline", "Polyline", "polyline"],
-                              ] as [SketchToolMode, string, DesignIconName][]
-                            ).map(([k, lbl, ic]) => (
-                              <button key={k} type="button" onClick={() => setSketchTool(k)} style={ribbonBtn(sketchTool === k)}>
-                                <DesignIcon name={ic} size={13} />
-                                <span>{lbl}</span>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                        {activeSk && (
-                          <div style={groupBox}>
-                            <span style={groupLbl}>Modify</span>
-                            <div style={{ display: "flex", gap: 4 }}>
-                              <button
-                                type="button"
-                                title="Offset outward +2mm"
-                                onClick={() => {
-                                  const off = createOffsetVectorShape(activeSk, 2);
-                                  setVectorShapes((vs) => [...vs, off]);
-                                  setActiveVectorId(off.id);
-                                }}
-                                style={ribbonBtn(false)}
-                              >
-                                <span>Offset +2</span>
-                              </button>
-                              <button
-                                type="button"
-                                title="Offset inward -2mm"
-                                onClick={() => {
-                                  const off = createOffsetVectorShape(activeSk, -2);
-                                  setVectorShapes((vs) => [...vs, off]);
-                                  setActiveVectorId(off.id);
-                                }}
-                                style={ribbonBtn(false)}
-                              >
-                                <span>Offset -2</span>
-                              </button>
-                              <button
-                                type="button"
-                                title="Mirror sketch across X=0"
-                                onClick={() => {
-                                  const id = `vec-${Date.now()}`;
-                                  setVectorShapes((vs) => [...vs, { ...activeSk, id, name: `${activeSk.name} MirX`, xMm: -activeSk.xMm }]);
-                                  setActiveVectorId(id);
-                                }}
-                                style={ribbonBtn(false)}
-                              >
-                                <DesignIcon name="mirrorX" size={13} />
-                                <span>Mir X</span>
-                              </button>
-                              <button
-                                type="button"
-                                title="Center sketch at origin (0, 0)"
-                                onClick={() =>
-                                  setVectorShapes((vs) => vs.map((x) => (x.id === activeSk.id ? { ...x, xMm: 0, yMm: 0 } : x)))
-                                }
-                                style={ribbonBtn(false)}
-                              >
-                                <span>Center</span>
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                        <div style={{ ...groupBox, borderRight: "none", paddingRight: 0 }}>
-                          <span style={groupLbl}>Constraints & Finish</span>
-                          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                            <label title="Toggle Grid Snap (G)" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#cbd5e1", cursor: "pointer", padding: "4px 6px", borderRadius: 6, background: "rgba(30, 41, 59, 0.55)" }}>
-                              <input type="checkbox" checked={snapToGrid} onChange={(e) => setSnapToGrid(e.target.checked)} />
-                              Snap {snapStepMm}mm
-                            </label>
-                            {activeVectorId && (
-                              <button
-                                type="button"
-                                title="Delete selected shape (Del)"
-                                onClick={() => {
-                                  setVectorShapes((vs) => {
-                                    const next = vs.filter((x) => x.id !== activeVectorId);
-                                    setActiveVectorId(next[0]?.id ?? "");
-                                    return next;
-                                  });
-                                }}
-                                style={ribbonBtn(false, true)}
-                              >
-                                <span>Delete</span>
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              title="Finish Sketch & Return to 3D (Esc)"
-                              onClick={() => {
-                                setDesignMode("model3d");
-                                setIsSketchingIn3d(false);
-                              }}
-                              style={{ ...ribbonBtn(true), background: "#16a34a", borderColor: "#22c55e" }}
-                            >
-                              ✓ Finish Sketch
-                            </button>
-                          </div>
-                        </div>
-                      </>
-                    );
-                  })()}
-
-                  {designMode === "model3d" && !isSketchingIn3d && (
-                    <>
-                      <div style={groupBox}>
-                        <span style={groupLbl}>Sketch</span>
-                        <div style={{ display: "flex", gap: 4 }}>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSketchTool("rect");
-                              setIsSketchingIn3d(true);
-                            }}
-                            style={ribbonBtn(true)}
-                          >
-                            <DesignIcon name="vector" size={13} />
-                            <span>+ Create Sketch</span>
-                          </button>
-                          {vectorShapes.length > 0 && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const sk = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
-                                setActiveVectorId(sk.id);
-                                setSketchPlaneZMm(sk.sketchZMm ?? 0);
-                                setIsSketchingIn3d(true);
-                              }}
-                              style={ribbonBtn(false)}
-                            >
-                              Edit Sketch
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      <div style={groupBox}>
-                        <span style={groupLbl}>Create</span>
-                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                          {(
-                            [
-                              ["extrude", "Extrude", "union", "extrude"],
-                              ["revolve", "Revolve", "union", "revolve"],
-                              ["loft", "Loft", "union", "extrude"],
-                              ["sweep", "Sweep", "union", "pipe"],
-                              ["shell", "Shell", "union", "box"],
-                              ["hole", "Hole", "subtract", "hole"],
-                              ["box", "Box", "union", "box"],
-                              ["cylinder", "Cylinder", "union", "cylinder"],
-                              ["pipe", "Pipe", "union", "pipe"],
-                              ["sphere", "Sphere", "union", "sphere"],
-                            ] as [SolidPrimitiveKind, string, BooleanOp, DesignIconName][]
-                          ).map(([kind, lbl, defaultOp, ic]) => (
-                            <button
-                              key={kind}
-                              type="button"
-                              onClick={() => addSolidQuick(kind, lbl, defaultOp)}
-                              style={ribbonBtn(false, defaultOp === "subtract")}
-                            >
-                              <DesignIcon name={ic} size={13} />
-                              <span>{lbl}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div style={{ ...groupBox, borderRight: "none", paddingRight: 0 }}>
-                        <span style={groupLbl}>Modify</span>
-                        <div style={{ display: "flex", gap: 4 }}>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const id = `solid-${Date.now()}`;
-                              setSolidModels((ms) => [
-                                {
-                                  id,
-                                  name: "Stock Blank",
-                                  kind: "box",
-                                  visible: true,
-                                  boolOp: "union",
-                                  xMm: 0,
-                                  yMm: 0,
-                                  zMm: -job.thicknessMm * 0.5,
-                                  widthMm: job.widthMm,
-                                  depthMm: job.depthMm,
-                                  heightMm: job.thicknessMm,
-                                  rotXDeg: 0,
-                                  rotYDeg: 0,
-                                  rotZDeg: 0,
-                                  bevelMm: 0,
-                                },
-                                ...ms,
-                              ]);
-                              setActiveSolidId(id);
-                            }}
-                            style={ribbonBtn(false)}
-                          >
-                            <DesignIcon name="stockBlank" size={13} />
-                            <span>Stock Blank</span>
-                          </button>
-                          <label title="Snap all 3D objects to the stock floor" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#cbd5e1", cursor: "pointer", padding: "4px 6px", borderRadius: 6, background: "rgba(30, 41, 59, 0.55)" }}>
-                            <input
-                              type="checkbox"
-                              checked={snap3dToFloor}
-                              onChange={(e) => {
-                                const on = e.target.checked;
-                                setSnap3dToFloor(on);
-                                if (on) {
-                                  setSolidModels((ms) =>
-                                    ms.map((x) => (x.boolOp === "subtract" ? x : { ...x, zMm: Number((-job.thicknessMm + x.heightMm * 0.5).toFixed(2)) }))
-                                  );
-                                }
-                              }}
-                            />
-                            Floor Snap
-                          </label>
-                          {activeSolid && (
-                            <>
-                              <button
-                                type="button"
-                                title="Snap active object to floor"
-                                onClick={() =>
-                                  setSolidModels((ms) =>
-                                    ms.map((x) =>
-                                      x.id === activeSolid.id ? { ...x, zMm: Number((-job.thicknessMm + x.heightMm * 0.5).toFixed(2)) } : x
-                                    )
-                                  )
-                                }
-                                style={ribbonBtn(false)}
-                              >
-                                <span>Snap Floor</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setSolidModels((ms) =>
-                                    ms.map((x) => {
-                                      if (x.id !== activeSolid.id) return x;
-                                      const nextH = Number((x.heightMm + 2).toFixed(1));
-                                      return {
-                                        ...x,
-                                        heightMm: nextH,
-                                        zMm: snap3dToFloor ? Number((-job.thicknessMm + nextH * 0.5).toFixed(2)) : x.zMm,
-                                      };
-                                    })
-                                  )
-                                }
-                                style={ribbonBtn(false)}
-                              >
-                                <DesignIcon name="pull" size={13} />
-                                <span>Pull +2</span>
-                              </button>
-                              <button
-                                type="button"
-                                title="Fillet / Bevel +1mm"
-                                onClick={() =>
-                                  setSolidModels((ms) =>
-                                    ms.map((x) =>
-                                      x.id === activeSolid.id ? { ...x, bevelMm: Number(Math.min(10, (x.bevelMm || 0) + 1).toFixed(1)) } : x
-                                    )
-                                  )
-                                }
-                                style={ribbonBtn(false)}
-                              >
-                                <span>Fillet +1</span>
-                              </button>
-                              <button
-                                type="button"
-                                title="Circular Pattern (4× around center)"
-                                onClick={() => {
-                                  const count = 4;
-                                  const r = Math.max(20, Math.hypot(activeSolid.xMm, activeSolid.yMm) || 30);
-                                  const baseAng = Math.atan2(activeSolid.yMm, activeSolid.xMm);
-                                  const copies: SolidModelNode[] = [];
-                                  for (let i = 1; i < count; i++) {
-                                    const a = baseAng + (i / count) * Math.PI * 2;
-                                    copies.push({
-                                      ...activeSolid,
-                                      id: `solid-${Date.now()}-cp${i}`,
-                                      name: `${activeSolid.name} Circ${i}`,
-                                      xMm: Number((Math.cos(a) * r).toFixed(2)),
-                                      yMm: Number((Math.sin(a) * r).toFixed(2)),
-                                      rotZDeg: Number((activeSolid.rotZDeg + (i / count) * 360).toFixed(1)),
-                                    });
-                                  }
-                                  setSolidModels((ms) => [...ms, ...copies]);
-                                }}
-                                style={ribbonBtn(false)}
-                              >
-                                <DesignIcon name="pattern" size={13} />
-                                <span>Circ ×4</span>
-                              </button>
-                              <button
-                                type="button"
-                                title="Mirror across X=0"
-                                onClick={() => {
-                                  const id = `solid-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-                                  setSolidModels((ms) => [...ms, { ...activeSolid, id, name: `${activeSolid.name} Mirror`, xMm: -activeSolid.xMm }]);
-                                  setActiveSolidId(id);
-                                }}
-                                style={ribbonBtn(false)}
-                              >
-                                <DesignIcon name="mirrorX" size={13} />
-                                <span>Mirror X</span>
-                              </button>
-                              <button
-                                type="button"
-                                title="Delete selected solid (Del)"
-                                onClick={() => {
-                                  setSolidModels((ms) => {
-                                    const next = ms.filter((x) => x.id !== activeSolid.id);
-                                    setActiveSolidId(next[0]?.id ?? "");
-                                    return next;
-                                  });
-                                }}
-                                style={ribbonBtn(false, true)}
-                              >
-                                <span>Delete</span>
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-            );
-          })()}
-
-          {/* Fusion-Style Bottom Parametric Timeline */}
-          {step === "layout" && designMode === "model3d" && !isSketchingIn3d && (vectorShapes.length > 0 || solidModels.length > 0) && (
-            <div
-              style={{
-                position: "absolute",
-                bottom: 14,
-                left: 14,
-                right: 14,
-                zIndex: 24,
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "6px 10px",
-                borderRadius: 10,
-                background: "rgba(15, 20, 28, 0.9)",
-                backdropFilter: "blur(8px)",
-                border: "1px solid var(--hc-border-strong, #334155)",
-                overflowX: "auto",
+          {step === "layout" && (
+            <FusionTopRibbon
+              designMode={designMode}
+              isSketching={isSketchingIn3d}
+              enablePictureMode={enablePictureMode}
+              enableVectorMode={enableVectorMode}
+              enable3dModelMode={enable3dModelMode}
+              paramCount={userParams.length}
+              photoTool={toolMode}
+              hasActiveLayer={Boolean(activeLayer)}
+              onSetPhotoTool={setToolMode}
+              onCenterPhotoX={() => {
+                pushUndoSnapshot();
+                updateActivePlacement((p) => ({ ...p, offsetXMm: 0 }));
               }}
-            >
-              <span style={{ fontSize: 10, fontWeight: 700, color: "#64748b", letterSpacing: "0.08em", flexShrink: 0 }}>TIMELINE</span>
-              {vectorShapes.map((sk) => (
-                <button
-                  key={sk.id}
-                  type="button"
-                  title={`Double-click or click to edit ${sk.name}`}
-                  onClick={() => {
-                    setActiveVectorId(sk.id);
-                    setSketchPlaneZMm(sk.sketchZMm ?? 0);
-                    setIsSketchingIn3d(true);
-                  }}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 4,
-                    padding: "4px 8px",
-                    borderRadius: 6,
-                    border: activeVectorId === sk.id ? "1px solid #38bdf8" : "1px solid #334155",
-                    background: "rgba(30, 58, 138, 0.35)",
-                    color: "#93c5fd",
-                    fontSize: 11,
-                    fontWeight: 600,
-                    cursor: "pointer",
-                    whiteSpace: "nowrap",
-                    flexShrink: 0,
-                  }}
-                >
-                  <DesignIcon name="vector" size={12} />
-                  <span>{sk.name}</span>
-                </button>
-              ))}
-              {solidModels.map((m) => (
-                <div
-                  key={m.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 3,
-                    padding: "3px 7px",
-                    borderRadius: 6,
-                    border: activeSolidId === m.id ? "1px solid #38bdf8" : "1px solid #334155",
-                    background: m.suppressed ? "rgba(30, 41, 59, 0.3)" : m.boolOp === "subtract" ? "rgba(127, 29, 29, 0.35)" : "rgba(30, 41, 59, 0.8)",
-                    color: m.suppressed ? "#64748b" : "#e2e8f0",
-                    fontSize: 11,
-                    fontWeight: 600,
-                    opacity: m.suppressed ? 0.6 : 1,
-                    whiteSpace: "nowrap",
-                    flexShrink: 0,
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => setActiveSolidId(m.id)}
-                    style={{ background: "transparent", border: "none", color: "inherit", font: "inherit", cursor: "pointer", padding: 0 }}
-                  >
-                    {m.name}
-                  </button>
-                  <button
-                    type="button"
-                    title={m.suppressed ? "Unsuppress feature" : "Suppress feature"}
-                    onClick={() => setSolidModels((ms) => ms.map((x) => (x.id === m.id ? { ...x, suppressed: !x.suppressed } : x)))}
-                    style={{ background: "transparent", border: "none", color: m.suppressed ? "#4ade80" : "#94a3b8", cursor: "pointer", fontSize: 10, padding: "0 2px" }}
-                  >
-                    {m.suppressed ? "▶" : "⏸"}
-                  </button>
-                </div>
-              ))}
-            </div>
+              onCenterPhotoY={() => {
+                pushUndoSnapshot();
+                updateActivePlacement((p) => ({ ...p, offsetYMm: 0 }));
+              }}
+              onDeletePhotoLayer={() => {
+                if (!activeLayer) return;
+                pushUndoSnapshot();
+                setLayers((ls) => {
+                  const next = ls.filter((l) => l.id !== activeLayer.id);
+                  setActiveLayerId(next[0]?.id ?? "");
+                  return next;
+                });
+              }}
+              sketchTool={sketchTool}
+              hasActiveSketch={Boolean(activeVectorId || vectorShapes.length > 0)}
+              onSetSketchTool={setSketchTool}
+              onAddSketchText={() => {
+                const t = textDraft.trim() || "HybridCAM";
+                const id = `vec-${Date.now()}`;
+                setVectorShapes((vs) => [
+                  ...vs,
+                  {
+                    id,
+                    name: `Text: ${t.slice(0, 14)}`,
+                    kind: "text",
+                    visible: true,
+                    xMm: 0,
+                    yMm: 0,
+                    widthMm: Math.min(job.widthMm * 0.6, Math.max(30, t.length * 10)),
+                    heightMm: 24,
+                    rotationDeg: 0,
+                    cornerRadiusMm: 0,
+                    sides: 4,
+                    text: t,
+                    depthMm: 3,
+                    role: "vcarve",
+                    sketchZMm: sketchPlaneZMm,
+                  },
+                ]);
+                setActiveVectorId(id);
+              }}
+              onOpenSketchOffsetDialog={() =>
+                setFusionDialog({ kind: "sketchOffset", title: "Offset", sketchOffsetMm: 2 })
+              }
+              onMirrorSketchX={() => {
+                const act = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
+                if (!act) return;
+                const id = `vec-${Date.now()}`;
+                setVectorShapes((vs) => [...vs, { ...act, id, name: `${act.name} MirX`, xMm: -act.xMm }]);
+                setActiveVectorId(id);
+              }}
+              onCenterSketch={() => {
+                const act = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
+                if (!act) return;
+                setVectorShapes((vs) => vs.map((x) => (x.id === act.id ? { ...x, xMm: 0, yMm: 0 } : x)));
+              }}
+              onFilletSketchCorner={() => {
+                const act = vectorShapes.find((s) => s.id === activeVectorId) ?? vectorShapes[0];
+                if (!act) return;
+                setVectorShapes((vs) =>
+                  vs.map((x) => (x.id === act.id ? { ...x, cornerRadiusMm: Number(Math.min(Math.min(x.widthMm, x.heightMm) * 0.45, (x.cornerRadiusMm || 0) + 2).toFixed(1)) } : x))
+                );
+              }}
+              onDeleteSketch={() => {
+                const targetId = activeVectorId || vectorShapes[0]?.id;
+                if (!targetId) return;
+                setVectorShapes((vs) => {
+                  const next = vs.filter((x) => x.id !== targetId);
+                  setActiveVectorId(next[0]?.id ?? "");
+                  return next;
+                });
+              }}
+              onFinishSketch={() => {
+                setDesignMode("model3d");
+                setIsSketchingIn3d(false);
+              }}
+              onImportSvgFile={handleImportSvgSketch}
+              onImportDxfFile={handleImportDxfSketch}
+              onImportStlSolidFile={handleImportStlSolidFile}
+              onSendSolidToCam={handleSendSolidToCam}
+              hasActiveSolid={solidModels.length > 0}
+              onSetDesignMode={(m) => {
+                setDesignMode(m);
+                if (m === "picture") {
+                  setIsSketchingIn3d(false);
+                  setFusionDialog(null);
+                }
+              }}
+              onToggleInclude={(which, val) => {
+                if (which === "picture") setEnablePictureMode(val);
+                else if (which === "vector") setEnableVectorMode(val);
+                else setEnable3dModelMode(val);
+              }}
+              onOpenSketchPlanePicker={() => setFusionDialog({ kind: "sketchPlane", title: "Select Sketch Plane" })}
+              onOpenCreateSolid={(kind, defaultOp) => openCreateSolidDialog(kind, defaultOp)}
+              onInsertStockBlank={insertStockBlank}
+              onOpenFilletDialog={() => {
+                const act = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
+                if (!act) return;
+                setFusionDialog({
+                  kind: "fillet",
+                  title: "Fillet (Rounded)",
+                  draftSolid: { ...act, bevelStyle: "fillet", bevelMm: act.bevelMm > 0 ? act.bevelMm : 2 },
+                  editingSolidId: act.id,
+                });
+              }}
+              onOpenChamferDialog={() => {
+                const act = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
+                if (!act) return;
+                setFusionDialog({
+                  kind: "chamfer",
+                  title: "Chamfer (45°)",
+                  draftSolid: { ...act, bevelStyle: "chamfer", bevelMm: act.bevelMm > 0 ? act.bevelMm : 2 },
+                  editingSolidId: act.id,
+                });
+              }}
+              onOpenMoveCopyDialog={openMoveCopyDialog}
+              onOpenScaleDialog={() => {
+                const act = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
+                if (!act) return;
+                setFusionDialog({
+                  kind: "scale",
+                  title: "Scale Body",
+                  draftSolid: { ...act, scaleX: act.scaleX ?? 1, scaleY: act.scaleY ?? 1, scaleZ: act.scaleZ ?? 1 },
+                  editingSolidId: act.id,
+                  scaleUniform: true,
+                });
+              }}
+              onOpenAlignDialog={() =>
+                setFusionDialog({
+                  kind: "align",
+                  title: "Align Body",
+                  alignMode: "floor",
+                  alignTargetId: solidModels.find((m) => m.id !== activeSolidId)?.id ?? solidModels[0]?.id,
+                })
+              }
+              onOpenCombineDialog={() =>
+                setFusionDialog({
+                  kind: "combine",
+                  title: "Combine Bodies",
+                  combineToolId: activeSolidId || solidModels[0]?.id,
+                  combineOp: "subtract",
+                  combineKeepTools: false,
+                })
+              }
+              onOpenSplitBodyDialog={() =>
+                setFusionDialog({ kind: "splitBody", title: "Split Body", splitAxis: "X", splitPosMm: 0 })
+              }
+              onOpenAppearanceDialog={() =>
+                setFusionDialog({ kind: "appearance", title: "Appearance / Material" })
+              }
+              onOpenSectionAnalysisDialog={() =>
+                setFusionDialog({ kind: "sectionAnalysis", title: "Section Analysis" })
+              }
+              onOpenShortcutBox={() => setShowShortcutBox(true)}
+              onOpenOffsetPlaneDialog={() =>
+                setFusionDialog({
+                  kind: "offsetPlane",
+                  title: "Offset Plane",
+                  planeAxis: "XY",
+                  planeOffsetMm: 0,
+                  planeName: `Plane ${constructionPlanes.length + 1}`,
+                })
+              }
+              onOpenRectPatternDialog={() =>
+                setFusionDialog({ kind: "rectPattern", title: "Rectangular Pattern", countX: 3, countY: 1, spacingX: 25, spacingY: 25 })
+              }
+              onOpenCircPatternDialog={() =>
+                setFusionDialog({ kind: "circPattern", title: "Circular Pattern", circCount: 6, circRadius: 30 })
+              }
+              onOpenMirrorDialog={() => setFusionDialog({ kind: "mirror", title: "Mirror Body", mirrorAxis: "X" })}
+              onOpenMeasureDialog={() => setFusionDialog({ kind: "measure", title: "Inspect / Measure" })}
+              onSnapActiveToFloor={() => {
+                const act = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0];
+                if (!act) return;
+                setSolidModels((ms) =>
+                  ms.map((x) => (x.id === act.id ? { ...x, zMm: Number((-job.thicknessMm + x.heightMm * 0.5).toFixed(2)) } : x))
+                );
+              }}
+              onOpenParameters={() => setShowParamsModal(true)}
+              onDeleteActiveSolid={() => {
+                const targetId = activeSolidId || solidModels[0]?.id;
+                if (!targetId) return;
+                setSolidModels((ms) => {
+                  const next = ms.filter((x) => x.id !== targetId);
+                  setActiveSolidId(next[0]?.id ?? "");
+                  return next;
+                });
+              }}
+            />
           )}
 
+          {step === "layout" && designMode === "model3d" && isSketchingIn3d && (
+            <FusionSketchPalette
+              sketchPlaneZMm={sketchPlaneZMm}
+              snapToGrid={snapToGrid}
+              snapStepMm={snapStepMm}
+              showDimensions={showSketchDims}
+              activeShape={vectorShapes.find((s) => s.id === activeVectorId) ?? null}
+              resolvedShape={resolvedVectorShapes.find((s) => s.id === activeVectorId) ?? null}
+              paramEnv={paramEnv}
+              onChangeSnap={setSnapToGrid}
+              onChangeSnapStep={setSnapStepMm}
+              onChangeShowDimensions={setShowSketchDims}
+              onPatchShape={(id, patch) => setVectorShapes((vs) => vs.map((x) => (x.id === id ? { ...x, ...patch } : x)))}
+              onApplyConstraint={applySketchConstraint}
+              onProjectActiveSolid={projectActiveSolidToSketch}
+              onOpenSketchPattern={() =>
+                setFusionDialog({
+                  kind: "sketchPattern",
+                  title: "Sketch Pattern",
+                  sketchPatternType: "circ",
+                  countX: 3,
+                  countY: 2,
+                  spacingX: 20,
+                  spacingY: 20,
+                  circCount: 6,
+                  circRadius: 25,
+                })
+              }
+              onFinishSketch={() => {
+                setDesignMode("model3d");
+                setIsSketchingIn3d(false);
+              }}
+            />
+          )}
+
+          {step === "layout" && designMode !== "picture" && (
+            <FusionOperationDialog
+              dialog={fusionDialog}
+              stock={{ widthMm: job.widthMm, depthMm: job.depthMm, thicknessMm: job.thicknessMm }}
+              sketches={vectorShapes}
+              solidModels={solidModels}
+              constructionPlanes={constructionPlanes}
+              activeSolid={resolvedSolidModels.find((m) => m.id === activeSolidId) ?? resolvedSolidModels[0] ?? null}
+              sectionAnalysis={sectionAnalysis}
+              paramEnv={paramEnv}
+              snap3dToFloor={snap3dToFloor}
+              onUpdateDialog={setFusionDialog}
+              onChangeSectionAnalysis={setSectionAnalysis}
+              onApplyAppearance={(hex) => {
+                const targetId = activeSolidId || solidModels[0]?.id;
+                if (!targetId) return;
+                setSolidModels((ms) => ms.map((x) => (x.id === targetId ? { ...x, colorHex: hex } : x)));
+              }}
+              onConfirm={confirmFusionDialog}
+              onCancel={() => setFusionDialog(null)}
+              onPickSketchPlane={(zMm) => {
+                setFusionDialog(null);
+                setActiveVectorId("");
+                setSketchPlaneZMm(zMm);
+                setSketchTool("rect");
+                setIsSketchingIn3d(true);
+              }}
+            />
+          )}
+
+          {step === "layout" && designMode === "model3d" && !isSketchingIn3d && (
+            <FusionViewportControls
+                shading={shading}
+                showAxesAndGrid={showAxesAndGrid}
+                showStockOverlay={showStockOverlay}
+                snap3dToFloor={snap3dToFloor}
+                vectorShapes={vectorShapes}
+                activeVectorId={activeVectorId}
+                solidModels={solidModels}
+                activeSolidId={activeSolidId}
+                rollbackIndex={timelineRollback}
+                onSetCameraPreset={setCameraPreset}
+                onSetShading={setShading}
+                onToggleAxesAndGrid={() => setShowAxesAndGrid((v) => !v)}
+                onToggleStockOverlay={() => setShowStockOverlay((v) => !v)}
+                onToggleFloorSnap={(on) => {
+                  setSnap3dToFloor(on);
+                  if (on) {
+                    setSolidModels((ms) =>
+                      ms.map((x) => (x.boolOp === "subtract" ? x : { ...x, zMm: Number((-job.thicknessMm + x.heightMm * 0.5).toFixed(2)) }))
+                    );
+                  }
+                }}
+                onEditSketch={(sk) => {
+                  setActiveVectorId(sk.id);
+                  setSketchPlaneZMm(sk.sketchZMm ?? 0);
+                  setIsSketchingIn3d(true);
+                }}
+                onSelectSolid={setActiveSolidId}
+                onEditSolid={openEditSolidDialog}
+                onToggleSuppress={(id) =>
+                  setSolidModels((ms) => ms.map((x) => (x.id === id ? { ...x, suppressed: !x.suppressed } : x)))
+                }
+                onSetRollbackIndex={setTimelineRollback}
+              />
+          )}
+
+          <FusionShortcutBox
+            open={showShortcutBox}
+            onClose={() => setShowShortcutBox(false)}
+            commands={
+              [
+                { id: "sketch", label: "Create Sketch", category: "CREATE", shortcut: "K", run: () => setFusionDialog({ kind: "sketchPlane", title: "Select Sketch Plane" }) },
+                { id: "move", label: "Move / Copy", category: "MODIFY", shortcut: "M", run: openMoveCopyDialog },
+                { id: "extrude", label: "Extrude", category: "CREATE", shortcut: "E", run: () => openCreateSolidDialog("extrude", "union") },
+                { id: "revolve", label: "Revolve", category: "CREATE", run: () => openCreateSolidDialog("revolve", "union") },
+                { id: "loft", label: "Loft", category: "CREATE", run: () => openCreateSolidDialog("loft", "union") },
+                { id: "sweep", label: "Sweep", category: "CREATE", run: () => openCreateSolidDialog("sweep", "union") },
+                { id: "rib", label: "Rib", category: "CREATE", run: () => openCreateSolidDialog("rib", "union") },
+                { id: "hole", label: "Hole (Simple / Counterbore / Countersink)", category: "CREATE", shortcut: "H", run: () => openCreateSolidDialog("hole", "subtract") },
+                { id: "box", label: "Box", category: "CREATE", run: () => openCreateSolidDialog("box", "union") },
+                { id: "cylinder", label: "Cylinder", category: "CREATE", run: () => openCreateSolidDialog("cylinder", "union") },
+                { id: "shell", label: "Shell (Hollow)", category: "MODIFY", run: () => openCreateSolidDialog("shell", "union") },
+                { id: "fillet", label: "Fillet (Rounded)", category: "MODIFY", shortcut: "F", run: () => { const a = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0]; if (a) setFusionDialog({ kind: "fillet", title: "Fillet (Rounded)", draftSolid: { ...a, bevelStyle: "fillet", bevelMm: a.bevelMm > 0 ? a.bevelMm : 2 }, editingSolidId: a.id }); } },
+                { id: "chamfer", label: "Chamfer (45°)", category: "MODIFY", run: () => { const a = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0]; if (a) setFusionDialog({ kind: "chamfer", title: "Chamfer (45°)", draftSolid: { ...a, bevelStyle: "chamfer", bevelMm: a.bevelMm > 0 ? a.bevelMm : 2 }, editingSolidId: a.id }); } },
+                { id: "combine", label: "Combine (Join / Cut / Intersect)", category: "MODIFY", run: () => setFusionDialog({ kind: "combine", title: "Combine Bodies", combineToolId: activeSolidId || solidModels[0]?.id, combineOp: "subtract" }) },
+                { id: "split", label: "Split Body", category: "MODIFY", run: () => setFusionDialog({ kind: "splitBody", title: "Split Body", splitAxis: "X", splitPosMm: 0 }) },
+                { id: "scale", label: "Scale Body", category: "MODIFY", run: () => { const a = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0]; if (a) setFusionDialog({ kind: "scale", title: "Scale Body", draftSolid: { ...a, scaleX: a.scaleX ?? 1, scaleY: a.scaleY ?? 1, scaleZ: a.scaleZ ?? 1 }, editingSolidId: a.id, scaleUniform: true }); } },
+                { id: "align", label: "Align Body", category: "MODIFY", run: () => setFusionDialog({ kind: "align", title: "Align Body", alignMode: "floor" }) },
+                { id: "rpat", label: "Rectangular Pattern", category: "CREATE", run: () => setFusionDialog({ kind: "rectPattern", title: "Rectangular Pattern", countX: 3, countY: 1, spacingX: 25, spacingY: 25 }) },
+                { id: "cpat", label: "Circular Pattern", category: "CREATE", run: () => setFusionDialog({ kind: "circPattern", title: "Circular Pattern", circCount: 6, circRadius: 30 }) },
+                { id: "mirror", label: "Mirror Body", category: "CREATE", run: () => setFusionDialog({ kind: "mirror", title: "Mirror Body", mirrorAxis: "X" }) },
+                { id: "plane", label: "Offset Construction Plane", category: "CONSTRUCT", run: () => setFusionDialog({ kind: "offsetPlane", title: "Offset Plane", planeAxis: "XY", planeOffsetMm: 0, planeName: `Plane ${constructionPlanes.length + 1}` }) },
+                { id: "section", label: "Section Analysis (Cross-Section)", category: "INSPECT", run: () => setFusionDialog({ kind: "sectionAnalysis", title: "Section Analysis" }) },
+                { id: "measure", label: "Measure / Bounding Box", category: "INSPECT", shortcut: "I", run: () => setFusionDialog({ kind: "measure", title: "Inspect / Measure" }) },
+                { id: "appear", label: "Appearance / Material", category: "MODIFY", shortcut: "A", run: () => setFusionDialog({ kind: "appearance", title: "Appearance / Material" }) },
+                { id: "params", label: "Change Parameters (fx)", category: "MODIFY", shortcut: "fx", run: () => setShowParamsModal(true) },
+              ] as ShortcutCommand[]
+            }
+          />
           <ParametricModal
             open={showParamsModal}
             parameters={userParams}
@@ -7366,24 +7118,224 @@ export default function App() {
             onClose={() => setShowParamsModal(false)}
           />
 
+          {/* Fusion-Style Top-Center 3D Plane Selection Prompt Banner */}
+          {step === "layout" && designMode === "model3d" && !isSketchingIn3d && fusionDialog?.kind === "sketchPlane" && (
+            <div
+              style={{
+                position: "absolute",
+                top: 94,
+                left: "50%",
+                transform: "translateX(-50%)",
+                zIndex: 33,
+                padding: "7px 14px",
+                borderRadius: 6,
+                background: "rgba(32, 34, 37, 0.95)",
+                border: "1px solid #0696d7",
+                boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+                color: "#f1f5f9",
+                fontSize: 12,
+                fontWeight: 600,
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                pointerEvents: "none",
+              }}
+            >
+              <span style={{ color: "#f59e0b" }}>▱</span>
+              <span>
+                {hoveredPlaneLabel
+                  ? `Click to sketch on: ${hoveredPlaneLabel}`
+                  : "Select a glowing 3D plane (XY, XZ, YZ, or Top Face) to start sketching · Esc to cancel"}
+              </span>
+            </div>
+          )}
+
+          {contextMenu && (
+            <FusionContextMenu
+              x={contextMenu.x}
+              y={contextMenu.y}
+              title={contextMenu.mode === "sketch" ? "Sketch Menu" : "Solid Design Menu"}
+              onClose={() => setContextMenu(null)}
+              items={
+                contextMenu.mode === "sketch"
+                  ? ([
+                      { id: "sel", label: "Select / Drag", shortcut: "V", run: () => setSketchTool("select") },
+                      { id: "line", label: "Line", shortcut: "L", dividerBefore: true, run: () => setSketchTool("polyline") },
+                      { id: "rect", label: "2-Point Rectangle", shortcut: "R", run: () => setSketchTool("rect") },
+                      { id: "crect", label: "Center Rectangle", run: () => setSketchTool("centerRect") },
+                      { id: "circ", label: "Center Diameter Circle", shortcut: "C", run: () => setSketchTool("circle") },
+                      { id: "off", label: "Offset (+ / -)", shortcut: "O", dividerBefore: true, disabled: !activeVectorId && vectorShapes.length === 0, run: () => setFusionDialog({ kind: "sketchOffset", title: "Offset", sketchOffsetMm: 2 }) },
+                      { id: "trim", label: "Trim", shortcut: "T", run: () => setSketchTool("trim") },
+                      { id: "constr", label: "Toggle Construction", shortcut: "X", disabled: !activeVectorId, run: () => { const a = vectorShapes.find((s) => s.id === activeVectorId); if (a) setVectorShapes((vs) => vs.map((x) => (x.id === a.id ? { ...x, construction: !x.construction } : x))); } },
+                      { id: "proj", label: "Project 3D Body", shortcut: "P", run: projectActiveSolidToSketch },
+                      { id: "del", label: "Delete Selected", shortcut: "Del", accent: "red", dividerBefore: true, disabled: !activeVectorId, run: () => { if (!activeVectorId) return; pushCadUndo(); setVectorShapes((vs) => { const n = vs.filter((x) => x.id !== activeVectorId); setActiveVectorId(n[0]?.id ?? ""); return n; }); } },
+                      { id: "fin", label: "✓ Finish Sketch", shortcut: "Esc", accent: "green", dividerBefore: true, run: () => { setDesignMode("model3d"); setIsSketchingIn3d(false); } },
+                    ] as ContextMenuItem[])
+                  : ([
+                      { id: "csk", label: "Create Sketch", shortcut: "K", accent: "blue", run: () => setFusionDialog({ kind: "sketchPlane", title: "Select Sketch Plane" }) },
+                      { id: "ext", label: "Extrude", shortcut: "E", run: () => openCreateSolidDialog("extrude", "union") },
+                      { id: "edit", label: "Edit Feature", dividerBefore: true, disabled: solidModels.length === 0, run: () => { const a = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0]; if (a) openEditSolidDialog(a); } },
+                      { id: "move", label: "Move / Copy", shortcut: "M", disabled: solidModels.length === 0, run: openMoveCopyDialog },
+                      { id: "fillet", label: "Fillet (Rounded)", shortcut: "F", disabled: solidModels.length === 0, run: () => { const a = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0]; if (a) setFusionDialog({ kind: "fillet", title: "Fillet (Rounded)", draftSolid: { ...a, bevelStyle: "fillet", bevelMm: a.bevelMm > 0 ? a.bevelMm : 2 }, editingSolidId: a.id }); } },
+                      { id: "chamfer", label: "Chamfer (45°)", disabled: solidModels.length === 0, run: () => { const a = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0]; if (a) setFusionDialog({ kind: "chamfer", title: "Chamfer (45°)", draftSolid: { ...a, bevelStyle: "chamfer", bevelMm: a.bevelMm > 0 ? a.bevelMm : 2 }, editingSolidId: a.id }); } },
+                      { id: "hole", label: "Hole (Cut)", shortcut: "H", run: () => openCreateSolidDialog("hole", "subtract") },
+                      { id: "appear", label: "Appearance / Material", shortcut: "A", dividerBefore: true, disabled: solidModels.length === 0, run: () => setFusionDialog({ kind: "appearance", title: "Appearance / Material" }) },
+                      { id: "floor", label: "Snap to Floor", disabled: solidModels.length === 0, run: () => { const a = solidModels.find((m) => m.id === activeSolidId) ?? solidModels[0]; if (a) setSolidModels((ms) => ms.map((x) => (x.id === a.id ? { ...x, zMm: Number((-job.thicknessMm + x.heightMm * 0.5).toFixed(2)) } : x))); } },
+                      { id: "del", label: "Delete Body", shortcut: "Del", accent: "red", dividerBefore: true, disabled: solidModels.length === 0, run: () => { const tid = activeSolidId || solidModels[0]?.id; if (!tid) return; pushCadUndo(); setSolidModels((ms) => { const n = ms.filter((x) => x.id !== tid); setActiveSolidId(n[0]?.id ?? ""); return n; }); } },
+                    ] as ContextMenuItem[])
+              }
+            />
+          )}
+
           <main
             ref={mountRef}
+            onContextMenu={(e) => {
+              if (step === "layout" && designMode === "model3d" && !isSketchingIn3d) {
+                e.preventDefault();
+              }
+            }}
             onPointerDown={(e) => {
+              if (e.button === 2 && step === "layout" && designMode === "model3d" && !isSketchingIn3d) {
+                rightClick3dStart.current = { x: e.clientX, y: e.clientY };
+              }
+              if (fusionDialog?.kind === "sketchPlane" && e.button === 0) {
+                const ctx = sceneObjectsRef.current;
+                const el = mountRef.current;
+                if (ctx && el) {
+                  const rect = el.getBoundingClientRect();
+                  const ndc = new THREE.Vector2(
+                    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+                    -((e.clientY - rect.top) / rect.height) * 2 + 1
+                  );
+                  raycasterRef.current.setFromCamera(ndc, ctx.camera);
+                  const planeHits = raycasterRef.current.intersectObjects(pickablePlanesRef.current, false);
+                  if (planeHits.length > 0) {
+                    const zVal = Number(planeHits[0].object.userData?.sketchPlaneZ ?? 0);
+                    setHoveredPlaneLabel("");
+                    setFusionDialog(null);
+                    setActiveVectorId("");
+                    setSketchPlaneZMm(zVal);
+                    setSketchTool("rect");
+                    setIsSketchingIn3d(true);
+                    return;
+                  }
+                  const solidHits = raycasterRef.current.intersectObjects(pickableSolidsRef.current, false);
+                  if (solidHits.length > 0) {
+                    const sid = String(solidHits[0].object.userData?.solidId ?? "");
+                    const body = effectiveSolidModels.find((m) => m.id === sid);
+                    if (body) {
+                      const faceZ = Number((body.zMm + body.heightMm * 0.5).toFixed(2));
+                      setHoveredPlaneLabel("");
+                      setFusionDialog(null);
+                      setActiveVectorId("");
+                      setSketchPlaneZMm(faceZ);
+                      setSketchTool("rect");
+                      setIsSketchingIn3d(true);
+                      return;
+                    }
+                  }
+                }
+              }
+              if (
+                step === "layout" &&
+                designMode === "model3d" &&
+                !isSketchingIn3d &&
+                !fusionDialog &&
+                e.button === 0 &&
+                !sceneObjectsRef.current?.transformControls?.dragging
+              ) {
+                const ctx = sceneObjectsRef.current;
+                const el = mountRef.current;
+                if (ctx && el) {
+                  const rect = el.getBoundingClientRect();
+                  const ndc = new THREE.Vector2(
+                    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+                    -((e.clientY - rect.top) / rect.height) * 2 + 1
+                  );
+                  raycasterRef.current.setFromCamera(ndc, ctx.camera);
+                  const solidHits = raycasterRef.current.intersectObjects(pickableSolidsRef.current, false);
+                  if (solidHits.length > 0) {
+                    const sid = String(solidHits[0].object.userData?.solidId ?? "");
+                    if (sid) setActiveSolidId(sid);
+                  } else if (pickableSketchesRef.current.length > 0) {
+                    raycasterRef.current.params.Line.threshold = 4;
+                    const skHits = raycasterRef.current.intersectObjects(pickableSketchesRef.current, false);
+                    if (skHits.length > 0) {
+                      const skid = String(skHits[0].object.userData?.sketchId ?? "");
+                      if (skid) setActiveVectorId(skid);
+                    }
+                  }
+                }
+              }
               if (sculpt3dActive && step === "relief" && e.button === 0) {
                 sculptingNow.current = true;
                 raycastSculpt(e.clientX, e.clientY, true, true);
               }
             }}
+            onDoubleClick={(e) => {
+              if (step === "layout" && designMode === "model3d" && !isSketchingIn3d && !fusionDialog) {
+                const ctx = sceneObjectsRef.current;
+                const el = mountRef.current;
+                if (ctx && el && pickableSolidsRef.current.length > 0) {
+                  const rect = el.getBoundingClientRect();
+                  const ndc = new THREE.Vector2(
+                    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+                    -((e.clientY - rect.top) / rect.height) * 2 + 1
+                  );
+                  raycasterRef.current.setFromCamera(ndc, ctx.camera);
+                  const solidHits = raycasterRef.current.intersectObjects(pickableSolidsRef.current, false);
+                  if (solidHits.length > 0) {
+                    const sid = String(solidHits[0].object.userData?.solidId ?? "");
+                    const found = solidModels.find((m) => m.id === sid);
+                    if (found) openEditSolidDialog(found);
+                  }
+                }
+              }
+            }}
             onPointerMove={(e) => {
+              if (fusionDialog?.kind === "sketchPlane" && pickablePlanesRef.current.length > 0) {
+                const ctx = sceneObjectsRef.current;
+                const el = mountRef.current;
+                if (ctx && el) {
+                  const rect = el.getBoundingClientRect();
+                  const ndc = new THREE.Vector2(
+                    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+                    -((e.clientY - rect.top) / rect.height) * 2 + 1
+                  );
+                  raycasterRef.current.setFromCamera(ndc, ctx.camera);
+                  const hits = raycasterRef.current.intersectObjects(pickablePlanesRef.current, false);
+                  const hitObj = hits[0]?.object ?? null;
+                  for (const pl of pickablePlanesRef.current) {
+                    const mat = pl.material as THREE.MeshBasicMaterial;
+                    if (pl === hitObj) {
+                      mat.color.setHex(0x0696d7);
+                      mat.opacity = 0.48;
+                    } else {
+                      mat.color.setHex(pl.userData.baseColor ?? 0xf59e0b);
+                      mat.opacity = pl.userData.baseOpacity ?? 0.24;
+                    }
+                  }
+                  setHoveredPlaneLabel(hitObj ? String(hitObj.userData?.sketchPlaneLabel ?? "") : "");
+                  needsRenderRef.current = true;
+                }
+              }
               if (sculpt3dActive && step === "relief") {
                 raycastSculpt(e.clientX, e.clientY, sculptingNow.current, false);
               }
             }}
-            onPointerUp={() => {
+            onPointerUp={(e) => {
               sculptingNow.current = false;
+              if (e.button === 2 && rightClick3dStart.current && step === "layout" && designMode === "model3d" && !isSketchingIn3d) {
+                const moved = Math.hypot(e.clientX - rightClick3dStart.current.x, e.clientY - rightClick3dStart.current.y);
+                rightClick3dStart.current = null;
+                if (moved < 5) {
+                  setContextMenu({ x: e.clientX, y: e.clientY, mode: "solid" });
+                }
+              }
             }}
             onPointerLeave={() => {
               sculptingNow.current = false;
+              setHoveredPlaneLabel("");
               if (sceneObjectsRef.current?.brushRing) sceneObjectsRef.current.brushRing.visible = false;
             }}
             style={{
@@ -7392,12 +7344,19 @@ export default function App() {
               width: "100%",
               height: "100%",
               overflow: "hidden",
-              cursor: sculpt3dActive && step === "relief" ? "crosshair" : "default",
+              cursor:
+                fusionDialog?.kind === "sketchPlane"
+                  ? hoveredPlaneLabel
+                    ? "pointer"
+                    : "crosshair"
+                  : sculpt3dActive && step === "relief"
+                  ? "crosshair"
+                  : "default",
             }}
           />
 
           {/* Floating Top-Right 3D Camera Preset Bar */}
-          {(step !== "layout" || (designMode === "model3d" && !isSketchingIn3d)) && (
+          {step !== "layout" && (
             <div
               style={{
                 position: "absolute",

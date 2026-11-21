@@ -15,7 +15,10 @@ export type SolidPrimitiveKind =
   | "revolve"
   | "loft"
   | "sweep"
-  | "shell";
+  | "shell"
+  | "rib"
+  | "emboss"
+  | "stlMesh";
 
 export type BooleanOp = "union" | "subtract" | "intersect";
 
@@ -36,6 +39,18 @@ export interface SolidModelNode {
   rotYDeg: number;
   rotZDeg: number;
   bevelMm: number;
+  bevelStyle?: "fillet" | "chamfer";
+  holeType?: "simple" | "counterbore" | "countersink";
+  counterboreDiamMm?: number;
+  counterboreDepthMm?: number;
+  extrudeDir?: "oneSide" | "symmetric" | "twoSides";
+  heightMm2?: number;
+  embossText?: string;
+  customStlPositions?: number[];
+  scaleX?: number;
+  scaleY?: number;
+  scaleZ?: number;
+  colorHex?: string;
   sketchId?: string;
   sketchId2?: string;
   taperDeg?: number;
@@ -344,10 +359,11 @@ function csgBoolean(aGeom: THREE.BufferGeometry, bGeom: THREE.BufferGeometry, op
 // ---------- 3D Primitives, Sketch Extrude & Revolve ----------
 
 export function buildPrimitiveGeometry(node: SolidModelNode, sketches: VectorShape[]): THREE.BufferGeometry {
-  const w = Math.max(1, node.widthMm);
-  const d = Math.max(1, node.depthMm);
-  const h = Math.max(0.5, node.heightMm);
+  const w = Math.max(1, node.widthMm * (node.scaleX ?? 1));
+  const d = Math.max(1, node.depthMm * (node.scaleY ?? 1));
+  const h = Math.max(0.5, node.heightMm * (node.scaleZ ?? 1));
   const bev = Math.min(node.bevelMm || 0, w * 0.25, d * 0.25, h * 0.45);
+  const bevSegs = node.bevelStyle === "chamfer" ? 1 : 4;
   let geo: THREE.BufferGeometry;
 
   if (node.kind === "box") {
@@ -365,16 +381,76 @@ export function buildPrimitiveGeometry(node: SolidModelNode, sketches: VectorSha
         bevelEnabled: true,
         bevelThickness: bev,
         bevelSize: bev,
-        bevelSegments: 2,
+        bevelSegments: bevSegs,
       });
       geo.center();
     } else {
       geo = new THREE.BoxGeometry(w, d, h);
     }
-  } else if (node.kind === "cylinder" || node.kind === "hole") {
-    geo = new THREE.CylinderGeometry(w * 0.5, w * 0.5, h, 64);
+    if (Math.abs(node.taperDeg || 0) > 0.1) {
+      const tanA = Math.tan(((node.taperDeg || 0) * Math.PI) / 180);
+      const posAttr = geo.attributes.position;
+      const maxR = Math.max(1, Math.max(w, d) * 0.5);
+      for (let i = 0; i < posAttr.count; i++) {
+        const z = posAttr.getZ(i);
+        const t = (z + h * 0.5) / Math.max(0.01, h);
+        const sc = Math.max(0.1, 1 - (t * h * tanA) / maxR);
+        posAttr.setX(i, posAttr.getX(i) * sc);
+        posAttr.setY(i, posAttr.getY(i) * sc);
+      }
+      posAttr.needsUpdate = true;
+      geo.computeVertexNormals();
+    }
+  } else if (node.kind === "hole") {
+    const shaft = new THREE.CylinderGeometry(w * 0.5, w * 0.5, h, 64);
+    shaft.rotateX(Math.PI / 2);
+    if (node.holeType === "counterbore") {
+      const cbD = Math.max(w * 1.15, node.counterboreDiamMm ?? w * 1.6);
+      const cbH = Math.max(1, Math.min(h * 0.8, node.counterboreDepthMm ?? 4));
+      const head = new THREE.CylinderGeometry(cbD * 0.5, cbD * 0.5, cbH, 64);
+      head.rotateX(Math.PI / 2);
+      head.translate(0, 0, h * 0.5 - cbH * 0.5);
+      geo = csgBoolean(shaft, head, "union");
+      shaft.dispose();
+      head.dispose();
+    } else if (node.holeType === "countersink") {
+      const csD = Math.max(w * 1.2, node.counterboreDiamMm ?? w * 1.8);
+      const csH = Math.max(1, Math.min(h * 0.7, node.counterboreDepthMm ?? (csD - w) * 0.5));
+      const head = new THREE.CylinderGeometry(csD * 0.5, w * 0.5, csH, 64);
+      head.rotateX(Math.PI / 2);
+      head.translate(0, 0, h * 0.5 - csH * 0.5);
+      geo = csgBoolean(shaft, head, "union");
+      shaft.dispose();
+      head.dispose();
+    } else {
+      geo = shaft;
+    }
+    if (Math.abs(d - w) > 0.1) geo.scale(1, d / w, 1);
+  } else if (node.kind === "cylinder") {
+    const rBot = w * 0.5;
+    const taper = node.taperDeg || 0;
+    const rTop = Math.max(0.2, rBot - Math.tan((taper * Math.PI) / 180) * h);
+    geo = new THREE.CylinderGeometry(rTop, rBot, h, 64);
     geo.rotateX(Math.PI / 2);
     if (Math.abs(d - w) > 0.1) geo.scale(1, d / w, 1);
+  } else if (node.kind === "emboss") {
+    geo = buildBlockTextGeometry(node.embossText || "HYBRIDCAM", w, d, h);
+  } else if (node.kind === "stlMesh" && node.customStlPositions && node.customStlPositions.length >= 9) {
+    geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(node.customStlPositions, 3));
+    geo.computeBoundingBox();
+    const bb = geo.boundingBox!;
+    const sz = new THREE.Vector3();
+    bb.getSize(sz);
+    geo.center();
+    const sx = sz.x > 1e-4 ? w / sz.x : 1;
+    const sy = sz.y > 1e-4 ? d / sz.y : 1;
+    const szScale = sz.z > 1e-4 ? h / sz.z : 1;
+    geo.scale(sx, sy, szScale);
+    geo.computeVertexNormals();
+  } else if (node.kind === "rib") {
+    const wall = Math.max(1, node.wallThicknessMm ?? 3);
+    geo = new THREE.BoxGeometry(w, wall, h);
   } else if (node.kind === "pipe") {
     const outerR = Math.max(2, w * 0.5);
     const wall = Math.max(1.2, Math.min(outerR * 0.65, outerR * 0.28));
@@ -432,15 +508,21 @@ export function buildPrimitiveGeometry(node: SolidModelNode, sketches: VectorSha
       shape.lineTo(-w * 0.5, d * 0.5);
       shape.closePath();
     }
+    const totalH =
+      node.extrudeDir === "symmetric"
+        ? h * 2
+        : node.extrudeDir === "twoSides"
+        ? h + Math.max(0.5, node.heightMm2 ?? h * 0.5)
+        : h;
     geo = new THREE.ExtrudeGeometry(shape, {
-      depth: h,
+      depth: totalH,
       bevelEnabled: bev > 0.05,
       bevelThickness: bev,
       bevelSize: bev,
-      bevelSegments: 3,
+      bevelSegments: bevSegs,
       steps: Math.abs(node.taperDeg || 0) > 0.1 ? 4 : 1,
     });
-    geo.translate(0, 0, -h * 0.5);
+    geo.translate(0, 0, -totalH * 0.5);
     const taper = node.taperDeg || 0;
     if (Math.abs(taper) > 0.1) {
       const tanA = Math.tan((taper * Math.PI) / 180);
@@ -660,4 +742,133 @@ export function sampleSolidToHeightfield(
     }
   }
   return out;
+}
+
+const FONT_5X7: Record<string, string[]> = {
+  A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
+  B: ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
+  C: ["01110", "10001", "10000", "10000", "10000", "10001", "01110"],
+  D: ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
+  E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
+  F: ["11111", "10000", "10000", "11110", "10000", "10000", "10000"],
+  G: ["01110", "10001", "10000", "10111", "10001", "10001", "01110"],
+  H: ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
+  I: ["11111", "00100", "00100", "00100", "00100", "00100", "11111"],
+  J: ["00111", "00010", "00010", "00010", "10010", "10010", "01100"],
+  K: ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
+  L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
+  M: ["10001", "11011", "10101", "10101", "10001", "10001", "10001"],
+  N: ["10001", "11001", "10101", "10011", "10001", "10001", "10001"],
+  O: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
+  P: ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
+  Q: ["01110", "10001", "10001", "10001", "10101", "10010", "01101"],
+  R: ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
+  S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
+  T: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
+  U: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
+  V: ["10001", "10001", "10001", "10001", "10001", "01010", "00100"],
+  W: ["10001", "10001", "10001", "10101", "10101", "11011", "10001"],
+  X: ["10001", "10001", "01010", "00100", "01010", "10001", "10001"],
+  Y: ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
+  Z: ["11111", "00001", "00010", "00100", "01000", "10000", "11111"],
+  "0": ["01110", "10011", "10101", "10101", "11001", "10001", "01110"],
+  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
+  "2": ["01110", "10001", "00001", "00110", "01000", "10000", "11111"],
+  "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
+  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
+  "5": ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
+  "6": ["01110", "10000", "11110", "10001", "10001", "10001", "01110"],
+  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
+  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
+  "9": ["01110", "10001", "10001", "01111", "00001", "00001", "01110"],
+  "-": ["00000", "00000", "00000", "11111", "00000", "00000", "00000"],
+  ".": ["00000", "00000", "00000", "00000", "00000", "01100", "01100"],
+  " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
+};
+
+function buildBlockTextGeometry(rawText: string, w: number, d: number, h: number): THREE.BufferGeometry {
+  const txt = (rawText.trim().toUpperCase() || "CNC").slice(0, 16);
+  const cols = txt.length * 6 - 1;
+  const rows = 7;
+  const cellW = w / Math.max(1, cols);
+  const cellD = d / rows;
+  const positions: number[] = [];
+
+  const pushBox = (cx: number, cy: number, bw: number, bd: number, bh: number) => {
+    const x0 = cx - bw * 0.5, x1 = cx + bw * 0.5;
+    const y0 = cy - bd * 0.5, y1 = cy + bd * 0.5;
+    const z0 = -bh * 0.5, z1 = bh * 0.5;
+    // Top & bottom
+    positions.push(x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y0, z1, x1, y1, z1, x0, y1, z1);
+    positions.push(x0, y0, z0, x1, y1, z0, x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0);
+    // 4 sides
+    positions.push(x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z0, x1, y0, z1, x0, y0, z1);
+    positions.push(x1, y1, z0, x0, y1, z0, x0, y1, z1, x1, y1, z0, x0, y1, z1, x1, y1, z1);
+    positions.push(x0, y1, z0, x0, y0, z0, x0, y0, z1, x0, y1, z0, x0, y0, z1, x0, y1, z1);
+    positions.push(x1, y0, z0, x1, y1, z0, x1, y1, z1, x1, y0, z0, x1, y1, z1, x1, y0, z1);
+  };
+
+  for (let ci = 0; ci < txt.length; ci++) {
+    const glyph = FONT_5X7[txt[ci]] ?? FONT_5X7[" "];
+    for (let r = 0; r < 7; r++) {
+      for (let c = 0; c < 5; c++) {
+        if (glyph[r][c] === "1") {
+          const gx = (ci * 6 + c + 0.5) * cellW - w * 0.5;
+          const gy = (6 - r + 0.5) * cellD - d * 0.5;
+          pushBox(gx, gy, cellW * 1.02, cellD * 1.02, h);
+        }
+      }
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(positions.length ? positions : [0, 0, 0, 1, 0, 0, 0, 1, 0], 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+/**
+ * Parse a Binary or ASCII .STL ArrayBuffer into a flat triangle position array + dimensions (mm).
+ */
+export function parseStlToPositions(buf: ArrayBuffer): { positions: number[]; widthMm: number; depthMm: number; heightMm: number } {
+  const dv = new DataView(buf);
+  const positions: number[] = [];
+  let isBinary = false;
+  if (buf.byteLength >= 84) {
+    const triCount = dv.getUint32(80, true);
+    if (84 + triCount * 50 === buf.byteLength && triCount > 0) {
+      isBinary = true;
+      const maxTris = Math.min(triCount, 20000);
+      for (let i = 0; i < maxTris; i++) {
+        const off = 84 + i * 50 + 12;
+        for (let v = 0; v < 3; v++) {
+          positions.push(
+            dv.getFloat32(off + v * 12, true),
+            dv.getFloat32(off + v * 12 + 4, true),
+            dv.getFloat32(off + v * 12 + 8, true)
+          );
+        }
+      }
+    }
+  }
+  if (!isBinary) {
+    const txt = new TextDecoder().decode(buf);
+    const re = /vertex\s+([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s+([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s+([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(txt)) !== null && positions.length < 180000) {
+      positions.push(parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3]));
+    }
+  }
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let i = 0; i < positions.length; i += 3) {
+    const x = positions[i], y = positions[i + 1], z = positions[i + 2];
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  return {
+    positions,
+    widthMm: Number.isFinite(maxX - minX) ? Math.max(2, Number((maxX - minX).toFixed(1))) : 50,
+    depthMm: Number.isFinite(maxY - minY) ? Math.max(2, Number((maxY - minY).toFixed(1))) : 50,
+    heightMm: Number.isFinite(maxZ - minZ) ? Math.max(2, Number((maxZ - minZ).toFixed(1))) : 15,
+  };
 }

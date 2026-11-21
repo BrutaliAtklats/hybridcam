@@ -1,6 +1,6 @@
 import { evalParamExpr } from "./parametricCad";
 
-export type VectorShapeKind = "rect" | "circle" | "polygon" | "polyline" | "text";
+export type VectorShapeKind = "rect" | "circle" | "polygon" | "polyline" | "text" | "arc" | "spline";
 export type VectorRole = "carve" | "cutout" | "vcarve" | "model3d";
 
 export interface VectorShape {
@@ -8,6 +8,8 @@ export interface VectorShape {
   name: string;
   kind: VectorShapeKind;
   visible: boolean;
+  /** Dashed orange reference geometry (ignored by 3D extrude / CAM cut) */
+  construction?: boolean;
   xMm: number;
   yMm: number;
   widthMm: number;
@@ -98,6 +100,40 @@ export function shapeToPolylineMm(shape: VectorShape): [number, number][] {
     for (let i = 0; i < n; i++) {
       const a = (i / n) * Math.PI * 2 - Math.PI / 2;
       raw.push([hw * Math.cos(a), hd * Math.sin(a)]);
+    }
+  } else if (shape.kind === "arc") {
+    const segs = 36;
+    for (let i = 0; i <= segs; i++) {
+      const a = (i / segs) * Math.PI;
+      raw.push([hw * Math.cos(a), hd * Math.sin(a) - hd * 0.5]);
+    }
+  } else if (shape.kind === "spline" && shape.points && shape.points.length >= 2) {
+    // Smooth Catmull-Rom subdivision for Fit-Point Spline
+    const pts = shape.points;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[Math.max(0, i - 1)];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const p3 = pts[Math.min(pts.length - 1, i + 2)];
+      const sub = 8;
+      for (let s = 0; s < (i === pts.length - 2 ? sub + 1 : sub); s++) {
+        const t = s / sub;
+        const t2 = t * t;
+        const t3 = t2 * t;
+        const x =
+          0.5 *
+          (2 * p1[0] +
+            (-p0[0] + p2[0]) * t +
+            (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
+            (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3);
+        const y =
+          0.5 *
+          (2 * p1[1] +
+            (-p0[1] + p2[1]) * t +
+            (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
+            (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3);
+        raw.push([x, y]);
+      }
     }
   } else if (shape.kind === "polyline" && shape.points && shape.points.length >= 2) {
     for (const [px, py] of shape.points) {

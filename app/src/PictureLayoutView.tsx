@@ -177,6 +177,8 @@ export const PictureLayoutView: React.FC<Props> = ({
     }
 
     // Draw all visible picture layers in stack order (+Y is up -> canvas py = cy - maxY * pxPerMm)
+    let activeLayerBounds: { px: number; py: number; pw: number; ph: number; rotDeg: number } | null = null;
+
     for (const layer of layers) {
       if (!layer.visible) continue;
       const { minX, maxY, picW, picH } = computePictureBoundsMm(
@@ -191,27 +193,103 @@ export const PictureLayoutView: React.FC<Props> = ({
       const pw = picW * pxPerMm;
       const ph = picH * pxPerMm;
       const bmp = bitmapCache.current.get(layer.id);
+      const isSelected = layer.id === activeLayerId;
 
       ctx.save();
       ctx.translate(px + pw * 0.5, py + ph * 0.5);
       ctx.rotate(((layer.placement.rotationDeg || 0) * Math.PI) / 180);
       if (bmp) {
         ctx.save();
-        ctx.globalAlpha = layer.id === activeLayerId ? 0.95 : 0.72;
+        ctx.globalAlpha = isSelected ? 0.95 : 0.72;
         ctx.scale(layer.placement.flipX ? -1 : 1, layer.placement.flipY ? -1 : 1);
         ctx.drawImage(bmp, -pw * 0.5, -ph * 0.5, pw, ph);
         ctx.restore();
       }
-      const isSelected = layer.id === activeLayerId;
-      ctx.strokeStyle = isSelected ? (resizeMode ? "#facc15" : "var(--hc-accent-secondary, #38bdf8)") : "#64748b";
-      ctx.lineWidth = isSelected ? 2 : 1;
-      ctx.setLineDash([6, 4]);
-      ctx.strokeRect(-pw * 0.5, -ph * 0.5, pw, ph);
+
+      // In normal mode, draw layer boundary here
+      if (!resizeMode || !isSelected) {
+        ctx.strokeStyle = isSelected ? "var(--hc-accent-secondary, #38bdf8)" : "#64748b";
+        ctx.lineWidth = isSelected ? 2 : 1;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(-pw * 0.5, -ph * 0.5, pw, ph);
+        ctx.setLineDash([]);
+      }
+      ctx.restore();
+
+      if (isSelected) {
+        activeLayerBounds = { px, py, pw, ph, rotDeg: layer.placement.rotationDeg || 0 };
+      }
+    }
+
+    // In double-click resize mode, draw machine bed outline ON TOP of all pictures
+    if (resizeMode) {
+      ctx.save();
+
+      // Dark underlay stroke for high contrast against light picture pixels
+      ctx.strokeStyle = "rgba(11, 14, 20, 0.88)";
+      ctx.lineWidth = 4;
+      ctx.strokeRect(sx, sy, sw, sh);
+
+      // Bright accent dashed machine bed outline
+      ctx.strokeStyle = "var(--hc-accent-secondary, #38bdf8)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 5]);
+      ctx.strokeRect(sx, sy, sw, sh);
       ctx.setLineDash([]);
 
-      // Corner resize handles when in double-click resize mode
-      if (isSelected && resizeMode) {
-        const hs = 9;
+      // Corner brackets for clear stock boundary reference
+      const cornerLen = Math.max(8, Math.min(20, sw * 0.15, sh * 0.15));
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      // Top-left
+      ctx.moveTo(sx, sy + cornerLen); ctx.lineTo(sx, sy); ctx.lineTo(sx + cornerLen, sy);
+      // Top-right
+      ctx.moveTo(sx + sw - cornerLen, sy); ctx.lineTo(sx + sw, sy); ctx.lineTo(sx + sw, sy + cornerLen);
+      // Bottom-right
+      ctx.moveTo(sx + sw, sy + sh - cornerLen); ctx.lineTo(sx + sw, sy + sh); ctx.lineTo(sx + sw - cornerLen, sy + sh);
+      // Bottom-left
+      ctx.moveTo(sx + cornerLen, sy + sh); ctx.lineTo(sx, sy + sh); ctx.lineTo(sx, sy + sh - cornerLen);
+      ctx.stroke();
+
+      // Top badge indicating machine bed outline & dimensions
+      const badgeText = `Machine Bed: ${job.widthMm} × ${job.depthMm} mm`;
+      ctx.font = "bold 11px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+      const tm = ctx.measureText(badgeText);
+      const bW = tm.width + 16;
+      const bH = 20;
+      const bX = sx + sw * 0.5 - bW * 0.5;
+      const bY = Math.max(10, sy - bH - 4);
+      ctx.fillStyle = "rgba(15, 23, 42, 0.94)";
+      ctx.strokeStyle = "var(--hc-accent-secondary, #38bdf8)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(bX, bY, bW, bH, 5);
+      else ctx.rect(bX, bY, bW, bH);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#f8fafc";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(badgeText, sx + sw * 0.5, bY + bH * 0.5);
+
+      ctx.restore();
+
+      // Draw the active layer's yellow resize box & 4 corner handles on top of the bed outline
+      if (activeLayerBounds) {
+        const { px, py, pw, ph, rotDeg } = activeLayerBounds;
+        ctx.save();
+        ctx.translate(px + pw * 0.5, py + ph * 0.5);
+        ctx.rotate((rotDeg * Math.PI) / 180);
+
+        ctx.strokeStyle = "#facc15";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(-pw * 0.5, -ph * 0.5, pw, ph);
+        ctx.setLineDash([]);
+
+        const hs = 10;
         ctx.fillStyle = "#facc15";
         ctx.strokeStyle = "#0b0e14";
         ctx.lineWidth = 1.5;
@@ -224,8 +302,8 @@ export const PictureLayoutView: React.FC<Props> = ({
           ctx.fillRect(hx - hs * 0.5, hy - hs * 0.5, hs, hs);
           ctx.strokeRect(hx - hs * 0.5, hy - hs * 0.5, hs, hs);
         }
+        ctx.restore();
       }
-      ctx.restore();
     }
 
     // Origin marker

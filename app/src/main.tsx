@@ -2,6 +2,16 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
 import App from "./App";
+import { applyThemeToDocument, ThemeId, THEMES } from "./uiTheme";
+
+// Synchronously apply saved theme before first React render to eliminate initial theme flash
+try {
+  const savedTheme = localStorage.getItem("hybridcam.theme") as ThemeId | null;
+  const initTheme = savedTheme && THEMES[savedTheme] ? THEMES[savedTheme] : THEMES.midnight;
+  applyThemeToDocument(initTheme);
+} catch {
+  // ignore
+}
 
 class AppErrorBoundary extends React.Component<
   { children: React.ReactNode },

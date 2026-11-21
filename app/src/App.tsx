@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import * as THREE from "three";
@@ -442,7 +442,7 @@ export default function App() {
   });
   const activeTheme = THEMES[themeId] ?? THEMES.midnight;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     applyThemeToDocument(activeTheme);
     localStorage.setItem("hybridcam.theme", themeId);
     if (sceneObjectsRef.current) {

@@ -4,8 +4,38 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HybridCAM — Precision & Relief CAM</title>
+    <script>
+      (function() {
+        try {
+          var t = localStorage.getItem("hybridcam.theme");
+          var themes = {
+            midnight: { bg: "#0d1015", headerBg: "#141820", sidebarBg: "#141820", panelBg: "#1a1f28", subPanelBg: "#111419", inputBg: "#111419", border: "#262c36", borderStrong: "#30363d", text: "#f1f5f9", textMuted: "#9ca3af", sectionTitle: "#93c5fd", accent: "#2563eb", accentHover: "#3b82f6", accentSecondary: "#38bdf8", success: "#16a34a" },
+            miamiVice: { bg: "#0b0616", headerBg: "#120a24", sidebarBg: "#120a24", panelBg: "#1a0f2e", subPanelBg: "#0f081e", inputBg: "#0f081e", border: "#341e59", borderStrong: "#4b2b82", text: "#fdf4ff", textMuted: "#c4b5fd", sectionTitle: "#00f0ff", accent: "#ff2a85", accentHover: "#ff4da6", accentSecondary: "#00f0ff", success: "#00d4aa" },
+            amberWorkshop: { bg: "#11100e", headerBg: "#181613", sidebarBg: "#181613", panelBg: "#221f1a", subPanelBg: "#141210", inputBg: "#141210", border: "#363128", borderStrong: "#4a4336", text: "#fafaf9", textMuted: "#a8a29e", sectionTitle: "#fbbf24", accent: "#d97706", accentHover: "#f59e0b", accentSecondary: "#fbbf24", success: "#16a34a" },
+            fusionLight: { bg: "#e2e8f0", headerBg: "#ffffff", sidebarBg: "#f8fafc", panelBg: "#ffffff", subPanelBg: "#f1f5f9", inputBg: "#ffffff", border: "#cbd5e1", borderStrong: "#94a3b8", text: "#0f172a", textMuted: "#475569", sectionTitle: "#1d4ed8", accent: "#2563eb", accentHover: "#1d4ed8", accentSecondary: "#0284c7", success: "#15803d" }
+          };
+          var cur = (t && themes[t]) ? themes[t] : themes.midnight;
+          var root = document.documentElement;
+          root.style.setProperty("--hc-bg", cur.bg);
+          root.style.setProperty("--hc-header-bg", cur.headerBg);
+          root.style.setProperty("--hc-sidebar-bg", cur.sidebarBg);
+          root.style.setProperty("--hc-panel-bg", cur.panelBg);
+          root.style.setProperty("--hc-subpanel-bg", cur.subPanelBg);
+          root.style.setProperty("--hc-input-bg", cur.inputBg);
+          root.style.setProperty("--hc-border", cur.border);
+          root.style.setProperty("--hc-border-strong", cur.borderStrong);
+          root.style.setProperty("--hc-text", cur.text);
+          root.style.setProperty("--hc-muted", cur.textMuted);
+          root.style.setProperty("--hc-section-title", cur.sectionTitle);
+          root.style.setProperty("--hc-accent", cur.accent);
+          root.style.setProperty("--hc-accent-hover", cur.accentHover);
+          root.style.setProperty("--hc-accent-secondary", cur.accentSecondary);
+          root.style.setProperty("--hc-success", cur.success);
+        } catch (e) {}
+      })();
+    </script>
   </head>
-  <body style="margin:0;background:#14171c;color:#e6edf3;font-family:Inter,system-ui,sans-serif;">
+  <body style="margin:0;background:var(--hc-bg, #0d1015);color:var(--hc-text, #f1f5f9);font-family:Inter,system-ui,sans-serif;">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

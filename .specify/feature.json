@@ -1,3 +1,7 @@
 {
-  "feature_directory": ".specify/specs/001-hybrid-cam-core"
+  "feature_directory": ".specify/specs/002-fusion-parametric-cad-and-cnc",
+  "completed_features": [
+    ".specify/specs/001-hybrid-cam-core",
+    ".specify/specs/002-fusion-parametric-cad-and-cnc"
+  ]
 }
